@@ -101,27 +101,38 @@ def resize_fit(img, width, height):
     return result
 
 
-def encode_rgb565_tiled(img, width=128, height=128):
+def encode_rgb565_tiled(img, width=128, height=128, bg_color=None):
     """
     Encode image to RGB565 8x8 Morton-tiled format (NSUI COMMON1 format)
-    
+
     Layout: 8x8 tiles with Morton (Z-order) pixel arrangement.
     Each pixel is 2 bytes (RGB565).
-    
+
     Uses 'fit' mode: scales image to fit within target, centers on background.
     This ensures the entire image is visible without cropping.
-    
+
+    Args:
+        img: PIL Image to encode
+        width: Target width (default 128)
+        height: Target height (default 128)
+        bg_color: Optional background color as (R, G, B) tuple (0-255).
+                  If None, uses default dark color (50, 50, 70).
+
     Note: RGB565 has no alpha channel. Images with transparency are
-    composited onto a dark background to prevent white lines.
+    composited onto a background color to prevent white lines.
     """
     if img.size != (width, height):
         img = resize_fit(img, width, height)
-    
+
+    # Default background color if not specified
+    if bg_color is None:
+        bg_color = (50, 50, 70)  # Dark color that matches GBA shell
+
     # CRITICAL: Handle transparency by compositing onto solid background
     # This prevents white lines from transparent pixels
     if img.mode == 'RGBA' or img.mode == 'LA' or img.mode == 'PA':
-        # Create dark background that matches GBA shell color
-        background = Image.new('RGB', (width, height), (50, 50, 70))
+        # Create background with specified color
+        background = Image.new('RGB', (width, height), bg_color)
         # Convert to RGBA for proper compositing
         if img.mode != 'RGBA':
             img = img.convert('RGBA')
@@ -414,21 +425,25 @@ class GBAVCBannerPatcher:
             self.audio = f.read()
         print(f"Loaded audio: {len(self.audio):,} bytes")
     
-    def patch_common1(self, image_path):
+    def patch_common1(self, image_path, bg_color=None):
         """
         Patch COMMON1 (cartridge label) in common CGFX.
-        
+
         Args:
             image_path: Path to 128x128 image
+            bg_color: Optional background color as (R, G, B) tuple (0-255)
         """
         img = Image.open(image_path)
-        encoded = encode_rgb565_tiled(img, 128, 128)
-        
+        encoded = encode_rgb565_tiled(img, 128, 128, bg_color)
+
         if len(encoded) != self.COMMON1_SIZE:
             raise ValueError(f"Encoded size {len(encoded)} != expected {self.COMMON1_SIZE}")
-        
+
         self.common_cgfx[self.COMMON1_OFFSET:self.COMMON1_OFFSET + self.COMMON1_SIZE] = encoded
-        print(f"Patched COMMON1 with {image_path}")
+        if bg_color:
+            print(f"Patched COMMON1 with {image_path} (bg: RGB{bg_color})")
+        else:
+            print(f"Patched COMMON1 with {image_path}")
     
     def patch_common2(self, image_path):
         """
@@ -700,14 +715,24 @@ def main():
     parser = argparse.ArgumentParser(description='GBA VC 3D Banner Patcher v2 (NSUI Compatible)')
     parser.add_argument('screen', nargs='?', help='COMMON2 footer image (256×64)')
     parser.add_argument('-c', '--cartridge', help='COMMON1 cartridge label (128×128)')
+    parser.add_argument('--bg-color', help='Background color for cartridge as R,G,B (e.g., 128,0,128)')
     parser.add_argument('--title', help='Generate footer from title text')
     parser.add_argument('--subtitle', default='', help='Subtitle for generated footer')
     parser.add_argument('-t', '--template', help='Path to template directory')
     parser.add_argument('-o', '--output', default='banner.bnr', help='Output file')
     parser.add_argument('--bnr', action='store_true', help='Create complete .bnr file (default)')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
-    
+
     args = parser.parse_args()
+
+    # Parse background color if provided
+    bg_color = None
+    if args.bg_color:
+        try:
+            parts = args.bg_color.split(',')
+            bg_color = (int(parts[0]), int(parts[1]), int(parts[2]))
+        except (ValueError, IndexError):
+            print(f"Warning: Invalid bg-color format '{args.bg_color}', expected R,G,B")
     
     # Determine template directory
     template_dir = args.template or 'templates/gba_vc/nsui_template'
@@ -755,7 +780,7 @@ def main():
         
         # Patch COMMON1 (cartridge label)
         if args.cartridge:
-            patcher.patch_common1(args.cartridge)
+            patcher.patch_common1(args.cartridge, bg_color)
         
         # Build banner
         patcher.build_banner(args.output)

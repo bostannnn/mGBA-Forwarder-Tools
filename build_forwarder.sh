@@ -18,25 +18,62 @@ BANNER_TOOLS="/opt/forwarder/banner_tools"
 echo "Building forwarder for: $GAME_NAME"
 echo "ROM path: $ROM_PATH"
 
-# Create custom data directory
+# Clean up custom data directory to avoid cached files from previous builds
+rm -rf "$CUSTOM_DATA"
 mkdir -p "$CUSTOM_DATA"
 
 # Write ROM path
 echo "$ROM_PATH" > "$CUSTOM_DATA/path.txt"
 
-# Process icon
-if [ -f "/work/icon.png" ]; then
-    echo "Creating custom icon from /work/icon.png..."
+# Process icon - always create fresh with correct game name
+ICON_IMAGE="/work/icon.png"
+ICON_RESIZED="/tmp/icon_48x48.png"
+
+if [ ! -f "$ICON_IMAGE" ]; then
+    # Use default mGBA icon if no custom icon provided
+    ICON_IMAGE="$MGBA_DIR/src/platform/3ds/gui-font.png"
+    if [ ! -f "$ICON_IMAGE" ]; then
+        # Fallback to any existing icon
+        ICON_IMAGE="$BUILD_DIR/3ds/mgba.png"
+    fi
+    echo "No custom icon, using default: $ICON_IMAGE"
+else
+    echo "Using custom icon: $ICON_IMAGE"
+fi
+
+# Resize icon to 48x48 (required by bannertool)
+echo "Resizing icon to 48x48..."
+python3 -c "
+from PIL import Image
+img = Image.open('$ICON_IMAGE')
+img = img.convert('RGBA')
+img = img.resize((48, 48), Image.Resampling.LANCZOS)
+img.save('$ICON_RESIZED')
+print(f'  Resized {img.size}')
+" 2>/dev/null
+
+if [ -f "$ICON_RESIZED" ]; then
+    ICON_IMAGE="$ICON_RESIZED"
+    echo "  Icon resized successfully"
+else
+    echo "  Warning: Could not resize icon, using original"
+fi
+
+echo "Creating icon with name: $GAME_NAME"
+if [ -f "$ICON_IMAGE" ]; then
     bannertool makesmdh \
         -s "$GAME_NAME" \
         -l "$GAME_NAME" \
         -p "mGBA Forwarder" \
-        -i "/work/icon.png" \
+        -i "$ICON_IMAGE" \
         -o "$CUSTOM_DATA/icon.icn" \
-        --flags visible,ratingrequired,recordusage \
-        || cp "$BUILD_DIR/3ds/mgba.icn" "$CUSTOM_DATA/icon.icn"
+        --flags visible,ratingrequired,recordusage
+    if [ $? -ne 0 ]; then
+        echo "Warning: Failed to create custom icon, using default"
+        cp "$BUILD_DIR/3ds/mgba.icn" "$CUSTOM_DATA/icon.icn"
+    fi
 else
-    echo "Using default icon"
+    echo "Warning: No icon image found, using default"
     cp "$BUILD_DIR/3ds/mgba.icn" "$CUSTOM_DATA/icon.icn"
 fi
 
@@ -136,6 +173,17 @@ fi
 
 echo "Custom data:"
 ls -la "$CUSTOM_DATA"
+
+# Copy custom files to build directory (cmake configure_file runs at config time, not build time)
+# These files need to be in the build directory for makerom to use them
+if [ -f "$CUSTOM_DATA/icon.icn" ]; then
+    echo "Copying custom icon to build directory..."
+    cp "$CUSTOM_DATA/icon.icn" "$BUILD_DIR/mgba.icn"
+fi
+if [ -f "$CUSTOM_DATA/banner.bnr" ]; then
+    echo "Copying custom banner to build directory..."
+    cp "$CUSTOM_DATA/banner.bnr" "$BUILD_DIR/mgba.bnr"
+fi
 
 # Clean and rebuild
 cd "$BUILD_DIR"
