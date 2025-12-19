@@ -329,16 +329,26 @@ class UniversalVCBannerPatcher:
         img = Image.open(image_path)
         print(f"  Patching COMMON1 label: {image_path}")
 
-        # Build a framed 128x128 label (purple border + centered art) to match GBA VC proportions,
+        # Build a framed 128x128 label (transparent outside, purple rounded border, centered art),
         # then downscale to smaller mips to keep the border thickness consistent.
-        inner_w, inner_h = 124, 86
-        offset_x = (128 - inner_w) // 2  # 2 px
-        offset_y = (128 - inner_h) // 2  # 21 px
+        outer_size = 128
+        inner_w, inner_h = 120, 80  # closer to GBA VC proportions (thicker border)
+        offset_x = (outer_size - inner_w) // 2  # 4 px
+        offset_y = (outer_size - inner_h) // 2  # 24 px
         border_color = (140, 110, 200, 255)  # Soft purple border
 
+        # Fit art inside inner box (preserve aspect, no crop).
         inner_img = self._fit_image(img, inner_w, inner_h, bg_color)
-        framed_128 = Image.new("RGBA", (128, 128), border_color)
-        framed_128.paste(inner_img, (offset_x, offset_y), inner_img)
+
+        framed_128 = Image.new("RGBA", (outer_size, outer_size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(framed_128)
+        draw.rounded_rectangle((0, 0, outer_size - 1, outer_size - 1), radius=12, fill=border_color)
+
+        # Paste inner art with rounded mask to soften corners.
+        mask = Image.new("L", (inner_w, inner_h), 0)
+        mask_draw = ImageDraw.Draw(mask)
+        mask_draw.rounded_rectangle((0, 0, inner_w - 1, inner_h - 1), radius=8, fill=255)
+        framed_128.paste(inner_img, (offset_x, offset_y), mask)
 
         mip_specs = [
             (128, 128, self.LABEL_128_OFFSET),
