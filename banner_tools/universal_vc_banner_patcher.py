@@ -329,6 +329,17 @@ class UniversalVCBannerPatcher:
         img = Image.open(image_path)
         print(f"  Patching COMMON1 label: {image_path}")
 
+        # Build a framed 128x128 label (purple border + centered art) to match GBA VC proportions,
+        # then downscale to smaller mips to keep the border thickness consistent.
+        inner_w, inner_h = 124, 86
+        offset_x = (128 - inner_w) // 2  # 2 px
+        offset_y = (128 - inner_h) // 2  # 21 px
+        border_color = (140, 110, 200, 255)  # Soft purple border
+
+        inner_img = self._fit_image(img, inner_w, inner_h, bg_color)
+        framed_128 = Image.new("RGBA", (128, 128), border_color)
+        framed_128.paste(inner_img, (offset_x, offset_y), inner_img)
+
         mip_specs = [
             (128, 128, self.LABEL_128_OFFSET),
             (64, 64, self.LABEL_64_OFFSET),
@@ -338,9 +349,7 @@ class UniversalVCBannerPatcher:
         ]
 
         for w, h, off in mip_specs:
-            # Default to transparent so the cartridge/plastic color shows through.
-            # If the user specifies `--bg-color`, use it as an opaque fill.
-            mip_img = self._fit_image(img, w, h, bg_color)
+            mip_img = framed_128.resize((w, h), Image.Resampling.LANCZOS)
             encoded = self._encode_rgba8_tiled_abgr(mip_img, w, h)
             self.cgfx_data[off : off + len(encoded)] = encoded
             print(f"    mip {w}x{h} -> 0x{off:X} ({len(encoded)} bytes)")
