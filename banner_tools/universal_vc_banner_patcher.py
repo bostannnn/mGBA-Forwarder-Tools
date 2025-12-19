@@ -551,22 +551,12 @@ class UniversalVCBannerPatcher:
             return
 
         footer_w, footer_h = footer.size
-        # Paint a light overlay, then a darker inset to mimic the hardware badge.
+        # Paint a darker badge box to more closely match hardware.
         box_left = 8
         box_top = 8
         box_right = 86
         box_bottom = footer_h - 8
-        draw.rectangle((box_left, box_top, box_right, box_bottom), fill=(245, 245, 245, 210))
-        inset = 4
-        draw.rectangle(
-            (
-                box_left + inset,
-                box_top + inset,
-                box_right - inset,
-                box_bottom - inset,
-            ),
-            fill=(190, 190, 190, 240),
-        )
+        draw.rectangle((box_left, box_top, box_right, box_bottom), fill=(90, 90, 90, 230))
 
         lines = ["Virtual", "Console"]
         # If the font is too tall, fall back to single-line to avoid overlap.
@@ -583,7 +573,7 @@ class UniversalVCBannerPatcher:
         y = box_top + (box_bottom - box_top - total_h) // 2
         for ln, w, h in line_metrics:
             x = box_left + (box_right - box_left - w) // 2
-            draw.text((x, y), ln, fill=(32, 32, 32, 255), font=font)
+            draw.text((x, y), ln, fill=(235, 235, 235, 255), font=font)
             y += h + spacing
 
     def build_banner(self, output_path: str) -> str:
