@@ -63,7 +63,7 @@ def compress_lz11(data: bytes) -> bytes:
                 # Find last occurrence of the next 3 bytes to seed the search.
                 seed = bytes(data[pos : pos + 3])
                 search_end = len(window)
-                search_pos = window.rfind(seed, 0, search_end)
+                search_pos = bytes(window).rfind(seed, 0, search_end)
                 while search_pos != -1:
                     disp = pos - (window_start + search_pos)
                     # Extend match using slices for speed.
@@ -78,7 +78,7 @@ def compress_lz11(data: bytes) -> bytes:
                         best_disp = disp
                         if best_len >= max_len:
                             break
-                    search_pos = window.rfind(seed, 0, search_pos)
+                    search_pos = bytes(window).rfind(seed, 0, search_pos)
 
             if best_len >= 3:
                 flags |= 0x80 >> bit
