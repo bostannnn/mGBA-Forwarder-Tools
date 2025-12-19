@@ -390,13 +390,15 @@ class UniversalVCBannerPatcher:
             font_title = ImageFont.load_default()
             font_sub = font_title
 
-        # Right box area
-        box_left = 92
-        box_right = 252
+        # Match GBA VC layout: left badge ~80px wide, right text box aligned/centered.
+        box_left = 8
+        box_right = 88
         box_top = 8
         box_bottom = 56
+        text_box_left = 96
+        text_box_right = 248
         max_w = box_right - box_left
-        center_x = (box_left + box_right) // 2
+        center_x = (text_box_left + text_box_right) // 2
 
         def measure(text: str, font) -> tuple[int, int]:
             bbox = draw.textbbox((0, 0), text, font=font)
@@ -462,7 +464,9 @@ class UniversalVCBannerPatcher:
 
         footer_w, footer_h = self.FOOTER_SIZE
         footer = self._decode_la8(self.FOOTER_OFFSET, footer_w, footer_h)
+        # Wipe existing text region to match GBA VC look.
         draw = ImageDraw.Draw(footer)
+        draw.rectangle((0, 0, footer_w, footer_h), fill=(235, 235, 235, 255))
 
         # Fonts: match GBA VC template if available (SCE-PS3-RD-R-LATIN.TTF, 16/12)
         font_title = None
