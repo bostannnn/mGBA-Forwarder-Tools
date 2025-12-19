@@ -551,13 +551,13 @@ class UniversalVCBannerPatcher:
             return
 
         footer_w, footer_h = footer.size
-        # Paint a neutral background to fully overwrite the baked label.
-        bg = (230, 230, 230, 255)
+        # Paint a light, slightly transparent overlay so we soften the baked label
+        # while keeping the template's gradients.
         box_left = 8
         box_top = 8
         box_right = 86
         box_bottom = footer_h - 8
-        draw.rectangle((box_left, box_top, box_right, box_bottom), fill=bg)
+        draw.rectangle((box_left, box_top, box_right, box_bottom), fill=(245, 245, 245, 210))
 
         text = "Virtual Console"
         bbox = draw.textbbox((0, 0), text, font=font)
@@ -565,7 +565,7 @@ class UniversalVCBannerPatcher:
         th = bbox[3] - bbox[1]
         x = box_left + (box_right - box_left - tw) // 2
         y = box_top + (box_bottom - box_top - th) // 2
-        draw.text((x, y), text, fill=(40, 40, 40, 255), font=font)
+        draw.text((x, y), text, fill=(48, 48, 48, 255), font=font)
 
     def build_banner(self, output_path: str) -> str:
         output_path = str(output_path)
@@ -622,7 +622,10 @@ def main() -> int:
         patcher.patch_shell_color(shell_color)
 
     if args.cartridge:
-        patcher.patch_cartridge_label(args.cartridge, bg_color)
+        # If the user picked a shell tint but no explicit bg, use the shell color for label background
+        # so the front and back stay consistent.
+        effective_bg = bg_color if bg_color is not None else shell_color
+        patcher.patch_cartridge_label(args.cartridge, effective_bg)
 
     if args.title or args.subtitle:
         patcher.patch_footer_text(args.title or "", args.subtitle)
