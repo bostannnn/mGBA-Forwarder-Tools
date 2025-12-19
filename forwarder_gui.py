@@ -18,6 +18,7 @@ import json
 import urllib.parse
 from pathlib import Path
 from threading import Thread, Event
+import time
 
 CLAMP_MAX_WIDTH = 820
 
@@ -1390,6 +1391,7 @@ img.save("{preview_path}")
 
         Returns (success, output_path, error_message).
         """
+        start = time.perf_counter()
         work_dir = Path(tempfile.mkdtemp())
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -1408,6 +1410,7 @@ img.save("{preview_path}")
                 status_cb("Creating 3D banner...")
             if progress_cb:
                 progress_cb(0.2)
+            print(f"[build] banner start: {footer_title}", flush=True)
 
             cmd = [
                 "python3",
@@ -1440,6 +1443,7 @@ img.save("{preview_path}")
             if result.returncode != 0 or not banner_out.exists():
                 err = (result.stderr or result.stdout or "Banner failed")[:200]
                 return False, None, f"Banner failed for {footer_title}: {err}"
+            print(f"[build] banner done: {footer_title} in {time.perf_counter() - start:.2f}s", flush=True)
 
             if progress_cb:
                 progress_cb(0.4)
@@ -1449,11 +1453,14 @@ img.save("{preview_path}")
                 icon_src = str(default_icon)
             if icon_src and Path(icon_src).exists():
                 shutil.copy(icon_src, work_dir / "icon.png")
+                print(f"[build] icon copied: {icon_src}", flush=True)
 
             if status_cb:
                 status_cb("Building CIA with Docker...")
             if progress_cb:
                 progress_cb(0.5)
+            docker_start = time.perf_counter()
+            print(f"[build] docker start: {footer_title}", flush=True)
 
             docker_cmd = [
                 "docker",
@@ -1473,10 +1480,12 @@ img.save("{preview_path}")
             if result.returncode != 0 or not (work_dir / "output.cia").exists():
                 err = (result.stderr or result.stdout or "CIA failed")[-200:]
                 return False, None, f"CIA failed for {footer_title}: {err}"
+            print(f"[build] docker done: {footer_title} in {time.perf_counter() - docker_start:.2f}s", flush=True)
 
             safe_name = self._safe_title(footer_title)
             out_path = output_dir / f"{safe_name}.cia"
             shutil.copy2(work_dir / "output.cia", out_path)
+            print(f"[build] complete: {footer_title} total {time.perf_counter() - start:.2f}s -> {out_path}", flush=True)
 
             if progress_cb:
                 progress_cb(1.0)
@@ -2185,6 +2194,7 @@ img.save("{preview_path}")
 
             candidates = [it for it in self.batch_items if it.title and it.needs_assets]
             total = max(1, len(candidates))
+            print(f"[batch] fetch start: {len(candidates)} items", flush=True)
             for idx, item in enumerate(candidates, start=1):
                 if not item.title:
                     continue
@@ -2236,6 +2246,7 @@ img.save("{preview_path}")
         except Exception as e:
             GLib.idle_add(lambda: self.set_status(f"SteamGridDB fetch failed: {e}", error=True))
         finally:
+            print("[batch] fetch complete", flush=True)
             GLib.idle_add(self._finish_batch_fetch)
 
     def _set_batch_fetch_progress(self, fraction: float, title: str) -> bool:
@@ -2276,10 +2287,12 @@ img.save("{preview_path}")
                 GLib.idle_add(lambda: self.set_status("Batch template validation failed", error=True))
                 return
             shell_color = self.batch_shell_color if self.batch_template_key == "universal_vc" else None
+            print(f"[batch] build start: {len(self.batch_items)} items, template={self.batch_template_key}", flush=True)
 
             total = max(1, len(self.batch_items))
             for idx, item in enumerate(self.batch_items, start=1):
                 title = item.title or Path(item.rom_path).stem
+                print(f"[batch] item {idx}/{total}: {title}", flush=True)
                 success, _, error = self._build_forwarder_item(
                     item,
                     template_key=self.batch_template_key,
@@ -2305,6 +2318,7 @@ img.save("{preview_path}")
                 GLib.idle_add(_update)
 
             GLib.idle_add(lambda: self.set_status(f"Batch complete: {len(self.batch_items)} item(s) processed"))
+            print(f"[batch] build complete: {len(self.batch_items)} items", flush=True)
         except Exception as e:
             GLib.idle_add(lambda: self.set_status(f"Batch build error: {e}", error=True))
         finally:
@@ -2528,6 +2542,7 @@ img.save("{preview_path}")
 
             if success and output_file:
                 self.set_status(f"Created: {output_file.name}")
+                print(f"[single] done: {output_file}", flush=True)
             else:
                 self.set_status(error or "Build failed", error=True)
         except subprocess.TimeoutExpired:
