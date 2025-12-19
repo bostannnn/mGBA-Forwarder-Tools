@@ -555,12 +555,17 @@ class UniversalVCBannerPatcher:
             return
 
         footer_w, footer_h = footer.size
-        # Paint a darker badge box to more closely match hardware.
+        # Paint a clean badge box that matches the template background, then draw stacked text.
         box_left = 8
         box_top = 8
         box_right = 86
         box_bottom = footer_h - 8
-        draw.rectangle((box_left, box_top, box_right, box_bottom), fill=(90, 90, 90, 230))
+        try:
+            base_px = footer.getpixel((box_left + 2, (box_top + box_bottom) // 2))
+        except Exception:
+            base_px = (220, 220, 220, 255)
+        base_fill = (base_px[0], base_px[1], base_px[2], 255)
+        draw.rectangle((box_left, box_top, box_right, box_bottom), fill=base_fill)
 
         lines = ["Virtual", "Console"]
         # If the font is too tall, fall back to single-line to avoid overlap.
@@ -577,7 +582,7 @@ class UniversalVCBannerPatcher:
         y = box_top + (box_bottom - box_top - total_h) // 2
         for ln, w, h in line_metrics:
             x = box_left + (box_right - box_left - w) // 2
-            draw.text((x, y), ln, fill=(235, 235, 235, 255), font=font)
+            draw.text((x, y), ln, fill=(40, 40, 40, 255), font=font)
             y += h + spacing
 
     def build_banner(self, output_path: str) -> str:
