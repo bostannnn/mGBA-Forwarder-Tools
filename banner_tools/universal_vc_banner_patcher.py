@@ -551,21 +551,40 @@ class UniversalVCBannerPatcher:
             return
 
         footer_w, footer_h = footer.size
-        # Paint a light, slightly transparent overlay so we soften the baked label
-        # while keeping the template's gradients.
+        # Paint a light overlay, then a darker inset to mimic the hardware badge.
         box_left = 8
         box_top = 8
         box_right = 86
         box_bottom = footer_h - 8
         draw.rectangle((box_left, box_top, box_right, box_bottom), fill=(245, 245, 245, 210))
+        inset = 4
+        draw.rectangle(
+            (
+                box_left + inset,
+                box_top + inset,
+                box_right - inset,
+                box_bottom - inset,
+            ),
+            fill=(190, 190, 190, 240),
+        )
 
-        text = "Virtual Console"
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
-        x = box_left + (box_right - box_left - tw) // 2
-        y = box_top + (box_bottom - box_top - th) // 2
-        draw.text((x, y), text, fill=(48, 48, 48, 255), font=font)
+        lines = ["Virtual", "Console"]
+        # If the font is too tall, fall back to single-line to avoid overlap.
+        total_h = 0
+        line_metrics = []
+        for ln in lines:
+            bbox = draw.textbbox((0, 0), ln, font=font)
+            w = bbox[2] - bbox[0]
+            h = bbox[3] - bbox[1]
+            line_metrics.append((ln, w, h))
+            total_h += h
+        spacing = 2
+        total_h += spacing
+        y = box_top + (box_bottom - box_top - total_h) // 2
+        for ln, w, h in line_metrics:
+            x = box_left + (box_right - box_left - w) // 2
+            draw.text((x, y), ln, fill=(32, 32, 32, 255), font=font)
+            y += h + spacing
 
     def build_banner(self, output_path: str) -> str:
         output_path = str(output_path)
