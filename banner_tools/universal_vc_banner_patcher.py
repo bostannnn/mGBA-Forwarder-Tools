@@ -414,7 +414,8 @@ class UniversalVCBannerPatcher:
             bbox = draw.textbbox((0, 0), text, font=font)
             return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-        self._draw_virtual_console_branding(draw, font_title, footer)
+        badge_rect = (8, 8, 88, 56)
+        self._draw_virtual_console_branding(draw, font_title, badge_rect)
 
         # Wrap title if needed
         words = title.split()
@@ -474,43 +475,36 @@ class UniversalVCBannerPatcher:
 
         footer_w, footer_h = self.FOOTER_SIZE
         # Build a fresh footer background to avoid leftover template text.
-        footer = Image.new("RGBA", (footer_w, footer_h), (240, 240, 240, 255))
+        footer = Image.new("RGBA", (footer_w, footer_h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(footer)
 
-        # Overall subtle vertical gradient.
-        for y in range(footer_h):
-            progress = y / max(1, footer_h - 1)
-            gray = int(245 - progress * 30)
-            for x in range(footer_w):
-                footer.putpixel((x, y), (gray, gray, gray, 255))
-
-        # Badge area gradient with soft rounding.
         box_top = 5
         box_bottom = 59
         badge_left = 8
         badge_right = 88
-        for y in range(box_top, box_bottom):
-            progress = max(0, min(1, (y - box_top) / (box_bottom - box_top - 1)))
-            gray_val = int(235 - progress * 25)
-            for x in range(badge_left, badge_right):
-                footer.putpixel((x, y), (gray_val, gray_val, gray_val, 255))
-
-        # Title area gradient with rounded edges.
         text_box_left = 95
         text_box_right = 250
-        for y in range(box_top, box_bottom):
-            progress = max(0, min(1, (y - box_top) / (box_bottom - box_top - 1)))
-            gray_val = int(235 - progress * 25)
-            left_x = text_box_left
-            right_x = text_box_right
-            if y <= box_top + 1 or y >= box_bottom - 2:
-                left_x += 5
-                right_x -= 5
-            elif y <= box_top + 3 or y >= box_bottom - 4:
-                left_x += 2
-                right_x -= 2
-            for x in range(left_x, right_x):
-                footer.putpixel((x, y), (gray_val, gray_val, gray_val, 255))
+
+        def rounded_mask(rect, radius):
+            left, top, right, bottom = rect
+            m = Image.new("L", (footer_w, footer_h), 0)
+            d = ImageDraw.Draw(m)
+            d.rounded_rectangle(rect, radius=radius, fill=255)
+            return m
+
+        def apply_gradient(rect, start_gray, end_gray, radius):
+            left, top, right, bottom = rect
+            grad = Image.new("RGBA", (footer_w, footer_h), (0, 0, 0, 0))
+            gd = ImageDraw.Draw(grad)
+            height = bottom - top
+            for y in range(top, bottom):
+                t = (y - top) / max(1, height - 1)
+                g = int(start_gray + t * (end_gray - start_gray))
+                gd.line([(left, y), (right, y)], fill=(g, g, g, 255))
+            footer.paste(grad, (0, 0), rounded_mask(rect, radius))
+
+        apply_gradient((badge_left, box_top, badge_right, box_bottom), 230, 200, radius=8)
+        apply_gradient((text_box_left, box_top, text_box_right, box_bottom), 230, 200, radius=8)
 
         # Fonts: match GBA VC template if available (SCE-PS3-RD-R-LATIN.TTF, 16/12)
         font_title = None
@@ -597,17 +591,12 @@ class UniversalVCBannerPatcher:
 
         return footer
 
-    def _draw_virtual_console_branding(self, draw: "ImageDraw.ImageDraw", font, footer: "Image.Image") -> None:
-        """Ensure left footer text always reads 'Virtual Console'."""
-        if font is None or draw is None or footer is None:
+    def _draw_virtual_console_branding(self, draw: "ImageDraw.ImageDraw", font, badge_rect: tuple[int, int, int, int]) -> None:
+        """Draw the two-line 'Virtual Console' badge text inside the given rect."""
+        if font is None or draw is None:
             return
 
-        footer_w, footer_h = footer.size
-        box_left = 8
-        box_top = 8
-        box_right = 88
-        box_bottom = footer_h - 8
-
+        box_left, box_top, box_right, box_bottom = badge_rect
         lines = ["Virtual", "Console"]
         total_h = 0
         line_metrics = []
@@ -622,7 +611,7 @@ class UniversalVCBannerPatcher:
         y = box_top + (box_bottom - box_top - total_h) // 2
         for ln, w, h in line_metrics:
             x = box_left + (box_right - box_left - w) // 2
-            draw.text((x, y), ln, fill=(40, 40, 40, 255), font=font)
+            draw.text((x, y), ln, fill=(245, 245, 245, 255), font=font)
             y += h + spacing
 
     def build_banner(self, output_path: str) -> str:
