@@ -124,8 +124,6 @@ class ForwarderWindow(Adw.ApplicationWindow):
         # Batch banner settings (separate from Single)
         self.batch_template_key = DEFAULT_TEMPLATE
         self.batch_template_dir = self._get_template_path(self.batch_template_key)
-        self.batch_icon_path: Path | None = None
-        self.batch_cartridge_path: Path | None = None
         self.batch_cartridge_bg_color: tuple[int, int, int] | None = None
         self.batch_shell_color: tuple[int, int, int] | None = None
         self._batch_expanded_keys: set[str] = set()
@@ -608,32 +606,6 @@ class ForwarderWindow(Adw.ApplicationWindow):
         self.batch_template_status_row = Adw.ActionRow(title="Template Status")
         self._check_batch_template()
         settings_group.add(self.batch_template_status_row)
-
-        self.batch_default_icon_row = Adw.ActionRow(
-            title="Default Icon",
-            subtitle="Optional: used when a ROM has no per-game icon"
-        )
-        batch_icon_clear_btn = Gtk.Button(icon_name="edit-clear-symbolic", valign=Gtk.Align.CENTER)
-        batch_icon_clear_btn.add_css_class("flat")
-        batch_icon_clear_btn.connect("clicked", lambda *_: self._clear_batch_path("icon"))
-        batch_icon_btn = Gtk.Button(label="Browse", valign=Gtk.Align.CENTER)
-        batch_icon_btn.connect("clicked", self.on_browse_batch_icon)
-        self.batch_default_icon_row.add_suffix(batch_icon_clear_btn)
-        self.batch_default_icon_row.add_suffix(batch_icon_btn)
-        settings_group.add(self.batch_default_icon_row)
-
-        self.batch_default_label_row = Adw.ActionRow(
-            title="Default Cartridge Label",
-            subtitle="Optional: used when a ROM has no per-game label/logo"
-        )
-        batch_label_clear_btn = Gtk.Button(icon_name="edit-clear-symbolic", valign=Gtk.Align.CENTER)
-        batch_label_clear_btn.add_css_class("flat")
-        batch_label_clear_btn.connect("clicked", lambda *_: self._clear_batch_path("cartridge"))
-        batch_label_btn = Gtk.Button(label="Browse", valign=Gtk.Align.CENTER)
-        batch_label_btn.connect("clicked", self.on_browse_batch_cartridge)
-        self.batch_default_label_row.add_suffix(batch_label_clear_btn)
-        self.batch_default_label_row.add_suffix(batch_label_btn)
-        settings_group.add(self.batch_default_label_row)
 
         self.batch_label_bg_row = Adw.ActionRow(
             title="Label Background",
@@ -1241,37 +1213,6 @@ img.save("{preview_path}")
                 pass
         Thread(target=run_color_picker, daemon=True).start()
 
-    def on_browse_batch_icon(self, button):
-        def on_selected(path):
-            self.batch_icon_path = Path(path)
-            self.batch_default_icon_row.set_subtitle(self.batch_icon_path.name)
-            self._render_batch_items()
-        pick_file_zenity_async(
-            "Select Default Icon Image",
-            [("Images", ["*.png", "*.jpg", "*.jpeg", "*.webp"])],
-            callback=on_selected,
-        )
-
-    def on_browse_batch_cartridge(self, button):
-        def on_selected(path):
-            self.batch_cartridge_path = Path(path)
-            self.batch_default_label_row.set_subtitle(self.batch_cartridge_path.name)
-            self._render_batch_items()
-        pick_file_zenity_async(
-            "Select Default Cartridge Label Image",
-            [("Images", ["*.png", "*.jpg", "*.jpeg", "*.webp"])],
-            callback=on_selected,
-        )
-
-    def _clear_batch_path(self, path_type: str) -> None:
-        if path_type == "icon":
-            self.batch_icon_path = None
-            self.batch_default_icon_row.set_subtitle("Optional: used when a ROM has no per-game icon")
-        elif path_type == "cartridge":
-            self.batch_cartridge_path = None
-            self.batch_default_label_row.set_subtitle("Optional: used when a ROM has no per-game label/logo")
-        self._render_batch_items()
-
     def _on_batch_filter_toggle(self, switch, param):
         self.batch_show_only_problems = bool(switch.get_active())
         self._render_batch_items()
@@ -1628,8 +1569,6 @@ img.save("{preview_path}")
             icon_preview.set_size_request(64, 64)
             icon_preview.set_content_fit(Gtk.ContentFit.CONTAIN)
             icon_preview_path = item.icon_file
-            if icon_preview_path is None and self.batch_icon_path and self.batch_icon_path.exists():
-                icon_preview_path = str(self.batch_icon_path)
             self._set_picture_from_file(icon_preview, icon_preview_path, 64, 64)
             preview_box.append(icon_preview)
 
@@ -1638,8 +1577,6 @@ img.save("{preview_path}")
             label_preview.set_size_request(96, 96)
             label_preview.set_content_fit(Gtk.ContentFit.CONTAIN)
             label_preview_path = item.label_file
-            if label_preview_path is None and self.batch_cartridge_path and self.batch_cartridge_path.exists():
-                label_preview_path = str(self.batch_cartridge_path)
             self._set_picture_from_file(label_preview, label_preview_path, 128, 128)
             preview_box.append(label_preview)
 
@@ -1698,10 +1635,8 @@ img.save("{preview_path}")
 
             if item.icon_file:
                 icon_row.set_subtitle(item.icon_file)
-            elif self.batch_icon_path and self.batch_icon_path.exists():
-                icon_row.set_subtitle(f"Not set (using batch default: {self.batch_icon_path.name})")
             else:
-                icon_row.set_subtitle("Not set (no batch default; CIA will use template icon)")
+                icon_row.set_subtitle("Not set (CIA will use template icon)")
             icon_suffix = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             icon_suffix.append(icon_pic)
 
@@ -1725,10 +1660,7 @@ img.save("{preview_path}")
 
             def _clear_icon(_btn, it=item, roww=icon_row, pic=icon_pic, ex=expander, rn=rom_name, preview=icon_preview):
                 it.icon_file = None
-                if self.batch_icon_path and self.batch_icon_path.exists():
-                    roww.set_subtitle(f"Not set (using batch default: {self.batch_icon_path.name})")
-                else:
-                    roww.set_subtitle("Not set (no batch default; CIA will use template icon)")
+                roww.set_subtitle("Not set (CIA will use template icon)")
                 self._set_picture_from_file(pic, None, 48, 48)
                 self._set_picture_from_file(preview, None, 64, 64)
                 self._update_batch_row_style(ex, it, rn)
@@ -1771,10 +1703,8 @@ img.save("{preview_path}")
             self._set_picture_from_file(label_pic, item.label_file, 64, 64)
             if item.label_file:
                 label_row.set_subtitle(item.label_file)
-            elif self.batch_cartridge_path and self.batch_cartridge_path.exists():
-                label_row.set_subtitle(f"Not set (using batch default: {self.batch_cartridge_path.name})")
             else:
-                label_row.set_subtitle("Not set (no batch default; banner will use template label)")
+                label_row.set_subtitle("Not set (banner will use template label)")
 
             label_suffix = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             label_suffix.append(label_pic)
@@ -1798,10 +1728,7 @@ img.save("{preview_path}")
 
             def _clear_label(_btn, it=item, roww=label_row, pic=label_pic, ex=expander, rn=rom_name, preview=label_preview):
                 it.label_file = None
-                if self.batch_cartridge_path and self.batch_cartridge_path.exists():
-                    roww.set_subtitle(f"Not set (using batch default: {self.batch_cartridge_path.name})")
-                else:
-                    roww.set_subtitle("Not set (no batch default; banner will use template label)")
+                roww.set_subtitle("Not set (banner will use template label)")
                 self._set_picture_from_file(pic, None, 64, 64)
                 self._set_picture_from_file(preview, None, 128, 128)
                 self._update_batch_row_style(ex, it, rn)
@@ -2348,10 +2275,6 @@ img.save("{preview_path}")
             if not self._check_batch_template():
                 GLib.idle_add(lambda: self.set_status("Batch template validation failed", error=True))
                 return
-            default_icon = self.batch_icon_path if self.batch_icon_path and self.batch_icon_path.exists() else None
-            default_label = (
-                self.batch_cartridge_path if self.batch_cartridge_path and self.batch_cartridge_path.exists() else None
-            )
             shell_color = self.batch_shell_color if self.batch_template_key == "universal_vc" else None
 
             total = max(1, len(self.batch_items))
@@ -2362,8 +2285,6 @@ img.save("{preview_path}")
                     template_key=self.batch_template_key,
                     template_dir=self.batch_template_dir,
                     output_dir=self.output_path,
-                    default_icon=default_icon,
-                    default_label=default_label,
                     bg_color=self.batch_cartridge_bg_color,
                     shell_color=shell_color,
                 )
