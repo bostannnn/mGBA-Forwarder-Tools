@@ -111,9 +111,6 @@ class ForwarderWindow(Adw.ApplicationWindow):
         self.cartridge_path = None
         self.output_path = Path.home() / "3ds-forwarders"
 
-        # Cartridge background color (default: transparent/black)
-        self.cartridge_bg_color = None  # None means transparent
-
         # Cartridge shell/background tint (Universal VC only)
         self.shell_color = None  # None means use template default
 
@@ -125,7 +122,6 @@ class ForwarderWindow(Adw.ApplicationWindow):
         # Batch banner settings (separate from Single)
         self.batch_template_key = DEFAULT_TEMPLATE
         self.batch_template_dir = self._get_template_path(self.batch_template_key)
-        self.batch_cartridge_bg_color: tuple[int, int, int] | None = None
         self.batch_shell_color: tuple[int, int, int] | None = None
         self._batch_expanded_keys: set[str] = set()
 
@@ -192,6 +188,25 @@ class ForwarderWindow(Adw.ApplicationWindow):
             except Exception:
                 continue
 
+    def _warn_template_issues(self, template_key: str, template_dir: Path, context: str) -> None:
+        """Non-blocking warning if a template folder or required files are missing."""
+        info = TEMPLATES.get(template_key)
+        if not info:
+            msg = f"{context}: unknown template '{template_key}' (continuing anyway)"
+            print(msg, flush=True)
+            self.set_status(msg, error=True)
+            return
+        if not template_dir.exists():
+            msg = f"{context}: template folder missing at {template_dir} (continuing anyway)"
+            print(msg, flush=True)
+            self.set_status(msg, error=True)
+            return
+        missing = [f for f in info.get("required_files", []) if not (template_dir / f).exists()]
+        if missing:
+            msg = f"{context}: template missing files: {', '.join(missing)} (continuing anyway)"
+            print(msg, flush=True)
+            self.set_status(msg, error=True)
+
     def _refresh_single_shell_row(self) -> None:
         """Show or remove the single-tab shell row to avoid blank dividers."""
         row = getattr(self, "shell_color_row", None)
@@ -204,18 +219,10 @@ class ForwarderWindow(Adw.ApplicationWindow):
         except Exception:
             parent = None
 
-        if self.current_template_key == "universal_vc":
-            if parent is None:
-                group.add(row)
-            row.set_visible(True)
-        else:
-            if parent is not None:
-                try:
-                    parent.remove(row)
-                except Exception:
-                    row.set_visible(False)
-            else:
-                row.set_visible(False)
+        # Keep the row in place; just toggle visibility so ordering stays fixed.
+        if parent is None:
+            group.add(row)
+        row.set_visible(self.current_template_key == "universal_vc")
 
     def _refresh_batch_shell_row(self) -> None:
         """Show or remove the batch shell row to avoid blank dividers."""
@@ -229,18 +236,9 @@ class ForwarderWindow(Adw.ApplicationWindow):
         except Exception:
             parent = None
 
-        if self.batch_template_key == "universal_vc":
-            if parent is None:
-                group.add(row)
-            row.set_visible(True)
-        else:
-            if parent is not None:
-                try:
-                    parent.remove(row)
-                except Exception:
-                    row.set_visible(False)
-            else:
-                row.set_visible(False)
+        if parent is None:
+            group.add(row)
+        row.set_visible(self.batch_template_key == "universal_vc")
     
     def _setup_ui(self):
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -373,26 +371,6 @@ class ForwarderWindow(Adw.ApplicationWindow):
         self.sd_path_row = Adw.ActionRow(title="ROM Path on SD", subtitle="Select a ROM to set this automatically")
         basic_group.add(self.sd_path_row)
 
-        icon_group = Adw.PreferencesGroup()
-        content.append(icon_group)
-
-        self.icon_row = Adw.ActionRow(
-            title="Icon Image",
-            subtitle="48x48 PNG (any size, auto-resized)"
-        )
-        icon_clear_btn = Gtk.Button(icon_name="edit-clear-symbolic", valign=Gtk.Align.CENTER)
-        icon_clear_btn.add_css_class("flat")
-        icon_clear_btn.connect("clicked", lambda b: self._clear_path("icon"))
-        icon_btn = Gtk.Button(label="Browse", valign=Gtk.Align.CENTER)
-        icon_btn.connect("clicked", self.on_browse_icon)
-        icon_fetch_btn = Gtk.Button(label="SGDB", valign=Gtk.Align.CENTER)
-        icon_fetch_btn.set_tooltip_text("Pick and download an icon from SteamGridDB for this title")
-        icon_fetch_btn.connect("clicked", self.on_fetch_single_icon)
-        self.icon_row.add_suffix(icon_clear_btn)
-        self.icon_row.add_suffix(icon_btn)
-        self.icon_row.add_suffix(icon_fetch_btn)
-        icon_group.add(self.icon_row)
-
         banner_group = Adw.PreferencesGroup()
         self.single_banner_group = banner_group
         content.append(banner_group)
@@ -414,54 +392,7 @@ class ForwarderWindow(Adw.ApplicationWindow):
         self.template_combo_row.connect("notify::selected", self._on_template_changed)
         banner_group.add(self.template_combo_row)
 
-        # Template status
-        self.template_status_row = Adw.ActionRow(title="Template Status")
-        self._check_template()
-        banner_group.add(self.template_status_row)
-        
-        # Cartridge Label
-        self.cartridge_row = Adw.ActionRow(
-            title="Cartridge Label",
-            subtitle="Logo/label image (fit mode, no cropping)"
-        )
-        cart_clear_btn = Gtk.Button(icon_name="edit-clear-symbolic", valign=Gtk.Align.CENTER)
-        cart_clear_btn.add_css_class("flat")
-        cart_clear_btn.connect("clicked", lambda b: self._clear_path("cartridge"))
-        cart_btn = Gtk.Button(label="Browse", valign=Gtk.Align.CENTER)
-        cart_btn.connect("clicked", self.on_browse_cartridge)
-        self.cartridge_row.add_suffix(cart_clear_btn)
-        self.cartridge_row.add_suffix(cart_btn)
-        cart_fetch_btn = Gtk.Button(label="SGDB", valign=Gtk.Align.CENTER)
-        cart_fetch_btn.set_tooltip_text("Pick and download a logo/label from SteamGridDB for this title")
-        cart_fetch_btn.connect("clicked", self.on_fetch_single_label)
-        self.cartridge_row.add_suffix(cart_fetch_btn)
-        banner_group.add(self.cartridge_row)
-
-        # Label Background Color
-        self.cartridge_color_row = Adw.ActionRow(
-            title="Label Background",
-            subtitle="Background behind logo (transparent by default)"
-        )
-        # Color preview box
-        self.color_preview_box = Gtk.DrawingArea()
-        self.color_preview_box.set_size_request(32, 32)
-        self.color_preview_box.set_valign(Gtk.Align.CENTER)
-        self.color_preview_box.set_draw_func(self._draw_color_preview)
-
-        color_clear_btn = Gtk.Button(icon_name="edit-clear-symbolic", valign=Gtk.Align.CENTER)
-        color_clear_btn.add_css_class("flat")
-        color_clear_btn.set_tooltip_text("Reset to transparent")
-        color_clear_btn.connect("clicked", self._clear_cartridge_color)
-
-        color_btn = Gtk.Button(label="Pick Color", valign=Gtk.Align.CENTER)
-        color_btn.connect("clicked", self.on_pick_cartridge_color)
-
-        self.cartridge_color_row.add_suffix(self.color_preview_box)
-        self.cartridge_color_row.add_suffix(color_clear_btn)
-        self.cartridge_color_row.add_suffix(color_btn)
-        banner_group.add(self.cartridge_color_row)
-
-        # Cartridge Shell Color (Universal VC)
+        # Cartridge Shell Color (Universal VC) — shown directly under template
         self.shell_color_row = Adw.ActionRow(
             title="Cartridge Shell Color",
             subtitle="Tint cartridge/body (template default if unset)"
@@ -482,7 +413,44 @@ class ForwarderWindow(Adw.ApplicationWindow):
         self.shell_color_row.add_suffix(self.shell_color_preview_box)
         self.shell_color_row.add_suffix(shell_clear_btn)
         self.shell_color_row.add_suffix(shell_btn)
+        banner_group.add(self.shell_color_row)
         self._refresh_single_shell_row()
+
+        # Icon Image
+        self.icon_row = Adw.ActionRow(
+            title="Icon Image",
+            subtitle="48x48 PNG (any size, auto-resized)"
+        )
+        icon_clear_btn = Gtk.Button(icon_name="edit-clear-symbolic", valign=Gtk.Align.CENTER)
+        icon_clear_btn.add_css_class("flat")
+        icon_clear_btn.connect("clicked", lambda b: self._clear_path("icon"))
+        icon_btn = Gtk.Button(label="Browse", valign=Gtk.Align.CENTER)
+        icon_btn.connect("clicked", self.on_browse_icon)
+        icon_fetch_btn = Gtk.Button(label="SGDB", valign=Gtk.Align.CENTER)
+        icon_fetch_btn.set_tooltip_text("Pick and download an icon from SteamGridDB for this title")
+        icon_fetch_btn.connect("clicked", self.on_fetch_single_icon)
+        self.icon_row.add_suffix(icon_clear_btn)
+        self.icon_row.add_suffix(icon_btn)
+        self.icon_row.add_suffix(icon_fetch_btn)
+        banner_group.add(self.icon_row)
+
+        # Cartridge Label
+        self.cartridge_row = Adw.ActionRow(
+            title="Cartridge Label",
+            subtitle="Logo/label image (fit mode, no cropping)"
+        )
+        cart_clear_btn = Gtk.Button(icon_name="edit-clear-symbolic", valign=Gtk.Align.CENTER)
+        cart_clear_btn.add_css_class("flat")
+        cart_clear_btn.connect("clicked", lambda b: self._clear_path("cartridge"))
+        cart_btn = Gtk.Button(label="Browse", valign=Gtk.Align.CENTER)
+        cart_btn.connect("clicked", self.on_browse_cartridge)
+        self.cartridge_row.add_suffix(cart_clear_btn)
+        self.cartridge_row.add_suffix(cart_btn)
+        cart_fetch_btn = Gtk.Button(label="SGDB", valign=Gtk.Align.CENTER)
+        cart_fetch_btn.set_tooltip_text("Pick and download a logo/label from SteamGridDB for this title")
+        cart_fetch_btn.connect("clicked", self.on_fetch_single_label)
+        self.cartridge_row.add_suffix(cart_fetch_btn)
+        banner_group.add(self.cartridge_row)
 
         preview_group = Adw.PreferencesGroup()
         content.append(preview_group)
@@ -603,29 +571,6 @@ class ForwarderWindow(Adw.ApplicationWindow):
             self.batch_template_combo_row.set_subtitle(TEMPLATES[self.batch_template_key]["description"])
         self.batch_template_combo_row.connect("notify::selected", self._on_batch_template_changed)
         settings_group.add(self.batch_template_combo_row)
-
-        self.batch_template_status_row = Adw.ActionRow(title="Template Status")
-        self._check_batch_template()
-        settings_group.add(self.batch_template_status_row)
-
-        self.batch_label_bg_row = Adw.ActionRow(
-            title="Label Background",
-            subtitle="Background behind logo (transparent by default)"
-        )
-        self.batch_label_bg_preview = Gtk.DrawingArea()
-        self.batch_label_bg_preview.set_size_request(32, 32)
-        self.batch_label_bg_preview.set_valign(Gtk.Align.CENTER)
-        self.batch_label_bg_preview.set_draw_func(self._draw_batch_label_bg_preview)
-        batch_bg_clear = Gtk.Button(icon_name="edit-clear-symbolic", valign=Gtk.Align.CENTER)
-        batch_bg_clear.add_css_class("flat")
-        batch_bg_clear.set_tooltip_text("Reset to transparent")
-        batch_bg_clear.connect("clicked", lambda *_: self._set_batch_label_bg(None))
-        batch_bg_pick = Gtk.Button(label="Pick Color", valign=Gtk.Align.CENTER)
-        batch_bg_pick.connect("clicked", self.on_pick_batch_label_bg)
-        self.batch_label_bg_row.add_suffix(self.batch_label_bg_preview)
-        self.batch_label_bg_row.add_suffix(batch_bg_clear)
-        self.batch_label_bg_row.add_suffix(batch_bg_pick)
-        settings_group.add(self.batch_label_bg_row)
 
         self.batch_shell_color_row = Adw.ActionRow(
             title="Cartridge Shell Color",
@@ -884,30 +829,8 @@ class ForwarderWindow(Adw.ApplicationWindow):
             self.template_dir = self._get_template_path(self.current_template_key)
             combo.set_subtitle(TEMPLATES[self.current_template_key]['description'])
             self._refresh_single_shell_row()
-            self._check_template()
-    
-    def _check_template(self):
-        template_info = TEMPLATES.get(self.current_template_key)
-        if not template_info:
-            self.template_status_row.set_subtitle("Unknown template")
-            return False
-        
-        if not self.template_dir.exists():
-            self.template_status_row.set_subtitle("Template folder not found")
-            return False
-        
-        missing = []
-        for f in template_info['required_files']:
-            if not (self.template_dir / f).exists():
-                missing.append(f)
-        
-        if missing:
-            self.template_status_row.set_subtitle(f"Missing: {', '.join(missing)}")
-            return False
-        
-        self.template_status_row.set_subtitle("Template ready")
-        return True
-    
+            self._warn_template_issues(self.current_template_key, self.template_dir, "Single tab")
+
     def _update_docker_status(self):
         if self.docker_status == 'ready':
             self.docker_row.set_subtitle("Ready")
@@ -1102,42 +1025,8 @@ img.save("{preview_path}")
             self.batch_template_dir = self._get_template_path(self.batch_template_key)
             combo.set_subtitle(TEMPLATES[self.batch_template_key]["description"])
             self._refresh_batch_shell_row()
-            self._check_batch_template()
+            self._warn_template_issues(self.batch_template_key, self.batch_template_dir, "Batch tab")
             self._render_batch_items()
-
-    def _check_batch_template(self) -> bool:
-        template_info = TEMPLATES.get(self.batch_template_key)
-        if not template_info:
-            self.batch_template_status_row.set_subtitle("Unknown template")
-            return False
-        if not self.batch_template_dir.exists():
-            self.batch_template_status_row.set_subtitle("Template folder not found")
-            return False
-        missing = []
-        for f in template_info["required_files"]:
-            if not (self.batch_template_dir / f).exists():
-                missing.append(f)
-        if missing:
-            self.batch_template_status_row.set_subtitle(f"Missing: {', '.join(missing)}")
-            return False
-        self.batch_template_status_row.set_subtitle("Template ready")
-        return True
-
-    def _draw_batch_label_bg_preview(self, area, cr, width, height):
-        if self.batch_cartridge_bg_color:
-            r, g, b = self.batch_cartridge_bg_color
-            cr.set_source_rgb(r / 255, g / 255, b / 255)
-            cr.rectangle(0, 0, width, height)
-            cr.fill()
-        else:
-            for y in range(0, height, 8):
-                for x in range(0, width, 8):
-                    if (x // 8 + y // 8) % 2 == 0:
-                        cr.set_source_rgb(0.8, 0.8, 0.8)
-                    else:
-                        cr.set_source_rgb(0.6, 0.6, 0.6)
-                    cr.rectangle(x, y, 8, 8)
-                    cr.fill()
 
     def _draw_batch_shell_preview(self, area, cr, width, height):
         if self.batch_shell_color:
@@ -1148,15 +1037,6 @@ img.save("{preview_path}")
         cr.rectangle(0, 0, width, height)
         cr.fill()
 
-    def _set_batch_label_bg(self, rgb: tuple[int, int, int] | None):
-        self.batch_cartridge_bg_color = rgb
-        if rgb:
-            r, g, b = rgb
-            self.batch_label_bg_row.set_subtitle(f"RGB({r}, {g}, {b})")
-        else:
-            self.batch_label_bg_row.set_subtitle("Background behind logo (transparent by default)")
-        self.batch_label_bg_preview.queue_draw()
-
     def _set_batch_shell_color(self, rgb: tuple[int, int, int] | None):
         self.batch_shell_color = rgb
         if rgb:
@@ -1165,30 +1045,6 @@ img.save("{preview_path}")
         else:
             self.batch_shell_color_row.set_subtitle("Universal VC only: tint cartridge/body (template default if unset)")
         self.batch_shell_color_preview.queue_draw()
-
-    def on_pick_batch_label_bg(self, button):
-        def run_color_picker():
-            cmd = ["zenity", "--color-selection", "--title", "Select Label Background Color"]
-            if self.batch_cartridge_bg_color:
-                r, g, b = self.batch_cartridge_bg_color
-                cmd.extend(["--color", f"rgb({r},{g},{b})"])
-            try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-                if result.returncode == 0 and result.stdout.strip():
-                    color_str = result.stdout.strip()
-                    if color_str.startswith("rgb("):
-                        parts = color_str[4:-1].split(",")
-                        r, g, b = int(parts[0]), int(parts[1]), int(parts[2])
-                    elif color_str.startswith("#"):
-                        r = int(color_str[1:3], 16)
-                        g = int(color_str[3:5], 16)
-                        b = int(color_str[5:7], 16)
-                    else:
-                        return
-                    GLib.idle_add(lambda: self._set_batch_label_bg((r, g, b)))
-            except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
-                pass
-        Thread(target=run_color_picker, daemon=True).start()
 
     def on_pick_batch_shell_color(self, button):
         def run_color_picker():
@@ -1381,7 +1237,6 @@ img.save("{preview_path}")
         output_dir: Path,
         default_icon: Path | None = None,
         default_label: Path | None = None,
-        bg_color: tuple[int, int, int] | None = None,
         shell_color: tuple[int, int, int] | None = None,
         progress_cb=None,
         status_cb=None,
@@ -1430,10 +1285,6 @@ img.save("{preview_path}")
                 label_path = str(default_label)
             if label_path:
                 cmd.extend(["--cartridge", label_path])
-
-            if bg_color:
-                r, g, b = bg_color
-                cmd.extend(["--bg-color", f"{r},{g},{b}"])
 
             if template_key == "universal_vc" and shell_color:
                 r, g, b = shell_color
@@ -2274,18 +2125,13 @@ img.save("{preview_path}")
         if self.docker_status != 'ready':
             self.set_status("Please build Docker image first", error=True)
             return
-        if not self._check_batch_template():
-            self.set_status("Batch template validation failed", error=True)
-            return
+        self._warn_template_issues(self.batch_template_key, self.batch_template_dir, "Batch build")
         self.batch_fetch_btn.set_sensitive(False)
         self.batch_build_btn.set_sensitive(False)
         Thread(target=self._do_build_batch_all, daemon=True).start()
 
     def _do_build_batch_all(self):
         try:
-            if not self._check_batch_template():
-                GLib.idle_add(lambda: self.set_status("Batch template validation failed", error=True))
-                return
             shell_color = self.batch_shell_color if self.batch_template_key == "universal_vc" else None
             print(f"[batch] build start: {len(self.batch_items)} items, template={self.batch_template_key}", flush=True)
 
@@ -2298,7 +2144,6 @@ img.save("{preview_path}")
                     template_key=self.batch_template_key,
                     template_dir=self.batch_template_dir,
                     output_dir=self.output_path,
-                    bg_color=self.batch_cartridge_bg_color,
                     shell_color=shell_color,
                 )
 
@@ -2324,24 +2169,6 @@ img.save("{preview_path}")
         finally:
             GLib.idle_add(self._render_batch_items)
 
-    def _draw_color_preview(self, area, cr, width, height):
-        """Draw the color preview box."""
-        if self.cartridge_bg_color:
-            r, g, b = self.cartridge_bg_color
-            cr.set_source_rgb(r / 255, g / 255, b / 255)
-            cr.rectangle(0, 0, width, height)
-            cr.fill()
-        else:
-            # Draw checkerboard for transparent
-            for y in range(0, height, 8):
-                for x in range(0, width, 8):
-                    if (x // 8 + y // 8) % 2 == 0:
-                        cr.set_source_rgb(0.8, 0.8, 0.8)
-                    else:
-                        cr.set_source_rgb(0.6, 0.6, 0.6)
-                    cr.rectangle(x, y, 8, 8)
-                    cr.fill()
-
     def _draw_shell_color_preview(self, area, cr, width, height):
         """Draw the shell tint preview box."""
         if self.shell_color:
@@ -2352,49 +2179,11 @@ img.save("{preview_path}")
         cr.rectangle(0, 0, width, height)
         cr.fill()
 
-    def _clear_cartridge_color(self, button):
-        """Clear the label background color (reset to transparent)."""
-        self.cartridge_bg_color = None
-        self.cartridge_color_row.set_subtitle("Background behind logo (transparent by default)")
-        self.color_preview_box.queue_draw()
-
     def _clear_shell_color(self, button):
         """Clear the cartridge shell tint (reset to template default)."""
         self.shell_color = None
         self.shell_color_row.set_subtitle("Tint cartridge/body (template default if unset)")
         self.shell_color_preview_box.queue_draw()
-
-    def on_pick_cartridge_color(self, button):
-        """Open color picker for label background."""
-        def run_color_picker():
-            cmd = ['zenity', '--color-selection', '--title', 'Select Label Background Color']
-            if self.cartridge_bg_color:
-                r, g, b = self.cartridge_bg_color
-                cmd.extend(['--color', f'rgb({r},{g},{b})'])
-            try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-                if result.returncode == 0 and result.stdout.strip():
-                    color_str = result.stdout.strip()
-                    # Parse color from zenity output (formats: rgb(r,g,b) or #rrggbb)
-                    if color_str.startswith('rgb('):
-                        parts = color_str[4:-1].split(',')
-                        r, g, b = int(parts[0]), int(parts[1]), int(parts[2])
-                    elif color_str.startswith('#'):
-                        r = int(color_str[1:3], 16)
-                        g = int(color_str[3:5], 16)
-                        b = int(color_str[5:7], 16)
-                    else:
-                        return
-                    GLib.idle_add(self._set_cartridge_color, r, g, b)
-            except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
-                pass
-        Thread(target=run_color_picker, daemon=True).start()
-
-    def _set_cartridge_color(self, r, g, b):
-        """Set the label background color."""
-        self.cartridge_bg_color = (r, g, b)
-        self.cartridge_color_row.set_subtitle(f"RGB({r}, {g}, {b})")
-        self.color_preview_box.queue_draw()
 
     def on_pick_shell_color(self, button):
         """Open color picker for Universal VC cartridge shell tint."""
@@ -2506,11 +2295,8 @@ img.save("{preview_path}")
         if self.docker_status != 'ready':
             self.set_status("Please build Docker image first", error=True)
             return
-        
-        if not self._check_template():
-            self.set_status("Template validation failed", error=True)
-            return
-        
+        self._warn_template_issues(self.current_template_key, self.template_dir, "Single build")
+
         self.create_btn.set_sensitive(False)
         self.progress_bar.set_visible(True)
         self.progress_bar.set_fraction(0)
@@ -2534,7 +2320,6 @@ img.save("{preview_path}")
                 output_dir=self.output_path,
                 default_icon=icon_path,
                 default_label=label_path,
-                bg_color=self.cartridge_bg_color,
                 shell_color=shell_color,
                 progress_cb=self.set_progress,
                 status_cb=self.set_status,
