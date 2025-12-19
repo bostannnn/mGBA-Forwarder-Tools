@@ -464,9 +464,37 @@ class UniversalVCBannerPatcher:
 
         footer_w, footer_h = self.FOOTER_SIZE
         footer = self._decode_la8(self.FOOTER_OFFSET, footer_w, footer_h)
-        # Wipe existing text region to match GBA VC look.
         draw = ImageDraw.Draw(footer)
-        draw.rectangle((0, 0, footer_w, footer_h), fill=(235, 235, 235, 255))
+
+        # Repaint badge and title areas with GBA VC-like gradient.
+        box_top = 5
+        box_bottom = 59
+
+        # Badge area
+        badge_left = 8
+        badge_right = 88
+        for y in range(box_top, box_bottom):
+            progress = max(0, min(1, (y - box_top) / (box_bottom - box_top - 1)))
+            gray_val = int(255 - progress * (255 - 215))
+            for x in range(badge_left, badge_right):
+                footer.putpixel((x, y), (gray_val, gray_val, gray_val, 255))
+
+        # Title area
+        text_box_left = 95
+        text_box_right = 250
+        for y in range(box_top, box_bottom):
+            progress = max(0, min(1, (y - box_top) / (box_bottom - box_top - 1)))
+            gray_val = int(255 - progress * (255 - 215))
+            left_x = text_box_left
+            right_x = text_box_right
+            if y <= box_top + 1 or y >= box_bottom - 2:
+                left_x = text_box_left + 5
+                right_x = text_box_right - 5
+            elif y <= box_top + 3 or y >= box_bottom - 4:
+                left_x = text_box_left + 2
+                right_x = text_box_right - 2
+            for x in range(left_x, right_x):
+                footer.putpixel((x, y), (gray_val, gray_val, gray_val, 255))
 
         # Fonts: match GBA VC template if available (SCE-PS3-RD-R-LATIN.TTF, 16/12)
         font_title = None
@@ -496,12 +524,12 @@ class UniversalVCBannerPatcher:
             font_sub = font_title
 
         # Right box area
-        box_left = 92
-        box_right = 252
-        box_top = 8
-        box_bottom = 56
-        max_w = box_right - box_left
-        center_x = (box_left + box_right) // 2
+        box_top = 5
+        box_bottom = 59
+        text_box_left = 95
+        text_box_right = 250
+        max_w = (text_box_right - text_box_left) - 8
+        center_x = (text_box_left + text_box_right) // 2
 
         def measure(text: str, font) -> tuple[int, int]:
             bbox = draw.textbbox((0, 0), text, font=font)
@@ -559,20 +587,12 @@ class UniversalVCBannerPatcher:
             return
 
         footer_w, footer_h = footer.size
-        # Paint a clean badge box that matches the template background, then draw stacked text.
         box_left = 8
         box_top = 8
-        box_right = 86
+        box_right = 88
         box_bottom = footer_h - 8
-        try:
-            base_px = footer.getpixel((box_left + 2, (box_top + box_bottom) // 2))
-        except Exception:
-            base_px = (220, 220, 220, 255)
-        base_fill = (base_px[0], base_px[1], base_px[2], 255)
-        draw.rectangle((box_left, box_top, box_right, box_bottom), fill=base_fill)
 
         lines = ["Virtual", "Console"]
-        # If the font is too tall, fall back to single-line to avoid overlap.
         total_h = 0
         line_metrics = []
         for ln in lines:
