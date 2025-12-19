@@ -304,7 +304,8 @@ class UniversalVCBannerPatcher:
             | flip
         )
         low32 = 0x00000000  # selector bits all 0 => uniform
-        return ((hi32 << 32) | low32).to_bytes(8, "big")
+        # CGFX data is little-endian; store the block accordingly.
+        return ((hi32 << 32) | low32).to_bytes(8, "little")
 
     def patch_shell_color(self, shell_color: Tuple[int, int, int]) -> None:
         """Patch COMMON3 (ETC1) to a solid color so front/back match."""
