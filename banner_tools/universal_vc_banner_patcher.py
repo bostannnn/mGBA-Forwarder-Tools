@@ -340,8 +340,28 @@ class UniversalVCBannerPatcher:
         inner_h = frame_h - border_thick * 2  # 78
         border_color = (140, 110, 200, 255)  # Soft purple border
 
-        # Fit art inside inner box (preserve aspect, no crop).
-        inner_img = self._fit_image(img, inner_w, inner_h, bg_color)
+        # Cover art inside inner box (preserve aspect, crop to fill).
+        img = img.convert("RGBA")
+        src_r = img.width / img.height
+        dst_r = inner_w / inner_h
+        if src_r > dst_r:
+            new_h = inner_h
+            new_w = int(new_h * src_r)
+        else:
+            new_w = inner_w
+            new_h = int(new_w / src_r)
+        resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        left = (new_w - inner_w) // 2
+        top = (new_h - inner_h) // 2
+        inner_img = resized.crop((left, top, left + inner_w, top + inner_h))
+        # Force opaque inside the framed area to avoid shrunk bbox.
+        if bg_color:
+            bg = Image.new("RGB", (inner_w, inner_h), (*bg_color, 255) if len(bg_color) == 3 else bg_color)
+        else:
+            bg = Image.new("RGB", (inner_w, inner_h), (0, 0, 0))
+        inner_composite = Image.new("RGBA", (inner_w, inner_h))
+        inner_composite.paste(bg, (0, 0))
+        inner_composite.paste(inner_img, (0, 0), inner_img)
 
         framed_128 = Image.new("RGBA", (outer_size, outer_size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(framed_128)
@@ -355,7 +375,7 @@ class UniversalVCBannerPatcher:
         mask = Image.new("L", (inner_w, inner_h), 0)
         mask_draw = ImageDraw.Draw(mask)
         mask_draw.rounded_rectangle((0, 0, inner_w - 1, inner_h - 1), radius=8, fill=255)
-        framed_128.paste(inner_img, (frame_x + border_thick, frame_y + border_thick), mask)
+        framed_128.paste(inner_composite, (frame_x + border_thick, frame_y + border_thick), mask)
 
         mip_specs = [
             (128, 128, self.LABEL_128_OFFSET),
