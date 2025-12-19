@@ -92,6 +92,7 @@ class SteamGridDBClient:
                 assets.append(
                     {
                         "url": it.get("url"),
+                        "thumb": it.get("thumb") or it.get("thumb_url"),
                         "width": it.get("width"),
                         "height": it.get("height"),
                         "score": _get_score(it),

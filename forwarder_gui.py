@@ -2035,9 +2035,11 @@ img.save("{preview_path}")
                 return []
         return []
 
-    def _prepare_asset_previews(self, client, assets, max_items: int = 12):
-        """Download thumbnails for the first few assets so we can show previews."""
+    def _prepare_asset_previews(self, client, assets, max_items: int = 8):
+        """Download thumbnails (or scaled full assets) for a few items to show in the picker."""
         import tempfile
+        from PIL import Image
+        import io
 
         out_assets = []
         for idx, asset in enumerate(assets or []):
@@ -2045,19 +2047,24 @@ img.save("{preview_path}")
                 break
             url = None
             try:
-                url = getattr(asset, "url", None) or asset.get("url")
+                url = getattr(asset, "thumb", None) or asset.get("thumb")
+                if not url:
+                    url = getattr(asset, "url", None) or asset.get("url")
             except Exception:
                 url = None
             if not url:
                 continue
+
             thumb_path = None
             try:
                 data = client.download(url)
+                img = Image.open(io.BytesIO(data))
+                img.thumbnail((160, 160))
                 out_dir = Path(tempfile.gettempdir()) / "mgba_sgdb_previews"
                 out_dir.mkdir(parents=True, exist_ok=True)
                 ext = Path(urllib.parse.urlparse(url).path).suffix or ".png"
                 thumb_path = out_dir / f"preview_{hash(url) & 0xFFFFFFFF:08x}{ext}"
-                thumb_path.write_bytes(data)
+                img.save(thumb_path)
             except Exception:
                 thumb_path = None
             try:
@@ -2144,7 +2151,11 @@ img.save("{preview_path}")
             return False
 
         GLib.idle_add(_run_dialog)
-        done.wait(timeout=180)
+        def _timeout():
+            done.set()
+            return False
+        GLib.timeout_add_seconds(30, _timeout)
+        done.wait(timeout=35)
         return picked["url"]
 
     def _do_fetch_item_art(self, item: BatchItem, which: str = "both") -> None:
