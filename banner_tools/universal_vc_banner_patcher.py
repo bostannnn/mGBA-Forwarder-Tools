@@ -117,6 +117,10 @@ class UniversalVCBannerPatcher:
     FOOTER_OFFSET = 0x1AD80
     FOOTER_SIZE = (256, 64)
 
+    # COMMON3 texture (ETC1, 128x128, 8192 bytes). Used for cartridge/background tinting.
+    SHELL_ETC1_OFFSET = 0x23C70
+    SHELL_ETC1_SIZE = 0x2000
+
     def __init__(self, template_dir: str):
         self.template_dir = Path(template_dir)
         self._validate_template()
@@ -248,35 +252,69 @@ class UniversalVCBannerPatcher:
         canvas.paste(img, (x, y), img)
         return canvas
 
-    def _default_label_bg_color(self, offset: int, width: int, height: int) -> Tuple[int, int, int]:
+    @staticmethod
+    def _etc1_solid_block(rgb: Tuple[int, int, int]) -> bytes:
         """
-        Derive a reasonable default label background color from the template's
-        existing COMMON1 texture (at `offset`) by averaging non-transparent pixels.
+        Build a single ETC1 block approximating a solid RGB color.
 
-        This helps keep the front/back cartridge tint consistent even when the
-        label image doesn't fill the whole square (fit mode).
+        This is intentionally limited to *solid fills only* to recolor the
+        Universal VC COMMON3 texture without relying on external encoders.
         """
-        region = self.cgfx_data[offset : offset + (width * height * 4)]
-        if len(region) < width * height * 4:
-            return (128, 0, 192)
 
-        rs = gs = bs = count = 0
-        for i in range(0, len(region), 4):
-            a = region[i]
-            b = region[i + 1]
-            g = region[i + 2]
-            r = region[i + 3]
-            if a == 0:
-                continue
-            rs += r
-            gs += g
-            bs += b
-            count += 1
+        r, g, b = rgb
 
-        if count == 0:
-            return (128, 0, 192)
+        def clamp_u8(v: int) -> int:
+            return 0 if v < 0 else 255 if v > 255 else v
 
-        return (rs // count, gs // count, bs // count)
+        # Using table 0 with selector 0 applies a negative modifier (≈ -8).
+        # Compensate so the decoded color is closer to the requested one.
+        base_r = clamp_u8(r + 8)
+        base_g = clamp_u8(g + 8)
+        base_b = clamp_u8(b + 8)
+
+        def to_5bit(v: int) -> int:
+            return int(round(v * 31 / 255)) & 0x1F
+
+        r5 = to_5bit(base_r)
+        g5 = to_5bit(base_g)
+        b5 = to_5bit(base_b)
+
+        # Differential mode, same color for both subblocks
+        dr = dg = db = 0
+        table1 = 0
+        table2 = 0
+        diff = 1
+        flip = 0
+
+        # ETC1 high 32-bit word (standard layout)
+        hi32 = (
+            (r5 << 27)
+            | (g5 << 22)
+            | (b5 << 17)
+            | (dr << 14)
+            | (dg << 11)
+            | (db << 8)
+            | (table1 << 5)
+            | (table2 << 2)
+            | (diff << 1)
+            | flip
+        )
+        low32 = 0x00000000  # selector bits all 0 => uniform
+        return ((hi32 << 32) | low32).to_bytes(8, "big")
+
+    def patch_shell_color(self, shell_color: Tuple[int, int, int]) -> None:
+        """Patch COMMON3 (ETC1) to a solid color so front/back match."""
+        off = self.SHELL_ETC1_OFFSET
+        size = self.SHELL_ETC1_SIZE
+        if off + size > len(self.cgfx_data):
+            print(
+                f"Warning: COMMON3 ETC1 region out of range (0x{off:X}..0x{off+size:X}); skipping shell recolor"
+            )
+            return
+
+        block = self._etc1_solid_block(shell_color)
+        self.cgfx_data[off : off + size] = block * (size // 8)
+        print(f"  Patched COMMON3 shell color @ 0x{off:X} (ETC1 solid RGB{shell_color})")
 
     def patch_cartridge_label(self, image_path: str, bg_color: Optional[Tuple[int, int, int]] = None) -> None:
         if Image is None:
@@ -295,8 +333,9 @@ class UniversalVCBannerPatcher:
         ]
 
         for w, h, off in mip_specs:
-            effective_bg = bg_color if bg_color is not None else self._default_label_bg_color(off, w, h)
-            mip_img = self._fit_image(img, w, h, effective_bg)
+            # Default to transparent so the cartridge/plastic color shows through.
+            # If the user specifies `--bg-color`, use it as an opaque fill.
+            mip_img = self._fit_image(img, w, h, bg_color)
             encoded = self._encode_rgba8_tiled_abgr(mip_img, w, h)
             self.cgfx_data[off : off + len(encoded)] = encoded
             print(f"    mip {w}x{h} -> 0x{off:X} ({len(encoded)} bytes)")
@@ -312,7 +351,9 @@ class UniversalVCBannerPatcher:
             return
 
         footer_w, footer_h = self.FOOTER_SIZE
-        footer = self._decode_la8(self.FOOTER_OFFSET, footer_w, footer_h)
+        footer = self.create_footer_image(title, subtitle)
+        if footer is None:
+            return
         draw = ImageDraw.Draw(footer)
 
         # Fonts: match GBA VC template if available (SCE-PS3-RD-R-LATIN.TTF, 16/12)
@@ -356,6 +397,8 @@ class UniversalVCBannerPatcher:
         def measure(text: str, font) -> tuple[int, int]:
             bbox = draw.textbbox((0, 0), text, font=font)
             return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+        self._draw_virtual_console_branding(draw, font_title, footer)
 
         # Wrap title if needed
         words = title.split()
@@ -403,6 +446,127 @@ class UniversalVCBannerPatcher:
         self.cgfx_data[self.FOOTER_OFFSET : self.FOOTER_OFFSET + len(encoded)] = encoded
         print(f"  Patched COMMON2 footer @ 0x{self.FOOTER_OFFSET:X}")
 
+    def create_footer_image(self, title: str, subtitle: Optional[str] = None) -> "Image.Image | None":
+        """Render a PIL image for the footer (COMMON2) using the template background."""
+        if Image is None:
+            return None
+
+        title = (title or "").strip()
+        subtitle = (subtitle or "").strip()
+        if not title:
+            return None
+
+        footer_w, footer_h = self.FOOTER_SIZE
+        footer = self._decode_la8(self.FOOTER_OFFSET, footer_w, footer_h)
+        draw = ImageDraw.Draw(footer)
+
+        # Fonts: match GBA VC template if available (SCE-PS3-RD-R-LATIN.TTF, 16/12)
+        font_title = None
+        font_sub = None
+
+        candidate_fonts = []
+        candidate_fonts.append(self.template_dir.parent / "nsui_template" / "SCE-PS3-RD-R-LATIN.TTF")
+        candidate_fonts.append(self.template_dir / "SCE-PS3-RD-R-LATIN.TTF")
+        candidate_fonts.extend(
+            [
+                Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+                Path("/usr/share/fonts/truetype/freefont/FreeSans.ttf"),
+            ]
+        )
+
+        for fp in candidate_fonts:
+            try:
+                if fp.exists():
+                    font_title = ImageFont.truetype(str(fp), 16)
+                    font_sub = ImageFont.truetype(str(fp), 12)
+                    break
+            except Exception:
+                continue
+
+        if font_title is None:
+            font_title = ImageFont.load_default()
+            font_sub = font_title
+
+        # Right box area
+        box_left = 92
+        box_right = 252
+        box_top = 8
+        box_bottom = 56
+        max_w = box_right - box_left
+        center_x = (box_left + box_right) // 2
+
+        def measure(text: str, font) -> tuple[int, int]:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+        self._draw_virtual_console_branding(draw, font_title, footer)
+
+        # Wrap title if needed
+        words = title.split()
+        lines: list[str] = []
+        current: list[str] = []
+        for word in words:
+            test = " ".join(current + [word])
+            if measure(test, font_title)[0] <= max_w:
+                current.append(word)
+            else:
+                if current:
+                    lines.append(" ".join(current))
+                current = [word]
+        if current:
+            lines.append(" ".join(current))
+
+        if len(lines) >= 2:
+            subtitle = ""
+
+        color_title = (32, 32, 32, 255)
+        color_sub = (40, 40, 40, 255)
+
+        if subtitle and lines:
+            tw, th = measure(lines[0], font_title)
+            sw, sh = measure(subtitle, font_sub)
+            total_h = th + 4 + sh
+            y = box_top + (box_bottom - box_top - total_h) // 2
+            draw.text((center_x - tw // 2, y), lines[0], fill=color_title, font=font_title)
+            draw.text((center_x - sw // 2, y + th + 4), subtitle, fill=color_sub, font=font_sub)
+        elif len(lines) == 1:
+            tw, th = measure(lines[0], font_title)
+            y = box_top + (box_bottom - box_top - th) // 2
+            draw.text((center_x - tw // 2, y), lines[0], fill=color_title, font=font_title)
+        else:
+            lines = (lines or [title])[:3]
+            heights = [measure(ln, font_title)[1] for ln in lines]
+            total_h = sum(heights) + 2 * (len(lines) - 1)
+            y = box_top + (box_bottom - box_top - total_h) // 2
+            for ln in lines:
+                tw, th = measure(ln, font_title)
+                draw.text((center_x - tw // 2, y), ln, fill=color_title, font=font_title)
+                y += th + 2
+
+        return footer
+
+    def _draw_virtual_console_branding(self, draw: "ImageDraw.ImageDraw", font, footer: "Image.Image") -> None:
+        """Ensure left footer text always reads 'Virtual Console'."""
+        if font is None or draw is None or footer is None:
+            return
+
+        footer_w, footer_h = footer.size
+        # Paint a neutral background to fully overwrite the baked label.
+        bg = (230, 230, 230, 255)
+        box_left = 8
+        box_top = 8
+        box_right = 86
+        box_bottom = footer_h - 8
+        draw.rectangle((box_left, box_top, box_right, box_bottom), fill=bg)
+
+        text = "Virtual Console"
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        x = box_left + (box_right - box_left - tw) // 2
+        y = box_top + (box_bottom - box_top - th) // 2
+        draw.text((x, y), text, fill=(40, 40, 40, 255), font=font)
+
     def build_banner(self, output_path: str) -> str:
         output_path = str(output_path)
 
@@ -435,6 +599,7 @@ def main() -> int:
     parser.add_argument("-o", "--output", default="banner.bnr", help="Output banner file")
     parser.add_argument("--cartridge", "--label", help="Cartridge label image (any format)")
     parser.add_argument("--bg-color", help="Background color R,G,B for label (e.g. 50,50,70)")
+    parser.add_argument("--shell-color", help="Cartridge/background color R,G,B (solid fill; e.g. 80,40,120)")
     parser.add_argument("--title", help="Footer title text")
     parser.add_argument("--subtitle", help="Footer subtitle text")
     args = parser.parse_args()
@@ -445,7 +610,16 @@ def main() -> int:
         if len(parts) == 3:
             bg_color = (int(parts[0]), int(parts[1]), int(parts[2]))
 
+    shell_color = None
+    if args.shell_color:
+        parts = args.shell_color.split(",")
+        if len(parts) == 3:
+            shell_color = (int(parts[0]), int(parts[1]), int(parts[2]))
+
     patcher = UniversalVCBannerPatcher(args.template)
+
+    if shell_color:
+        patcher.patch_shell_color(shell_color)
 
     if args.cartridge:
         patcher.patch_cartridge_label(args.cartridge, bg_color)
