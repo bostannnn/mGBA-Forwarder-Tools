@@ -545,7 +545,7 @@ class UniversalVCBannerPatcher:
             bbox = draw.textbbox((0, 0), text, font=font)
             return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-        self._draw_virtual_console_branding(draw, font_title, footer)
+        self._draw_virtual_console_branding(draw, font_title, (badge_left, box_top, badge_right, box_bottom))
 
         # Wrap title if needed
         words = title.split()
