@@ -464,36 +464,42 @@ class UniversalVCBannerPatcher:
             return None
 
         footer_w, footer_h = self.FOOTER_SIZE
-        footer = self._decode_la8(self.FOOTER_OFFSET, footer_w, footer_h)
+        # Build a fresh footer background to avoid leftover template text.
+        footer = Image.new("RGBA", (footer_w, footer_h), (240, 240, 240, 255))
         draw = ImageDraw.Draw(footer)
 
-        # Repaint badge and title areas with GBA VC-like gradient.
+        # Overall subtle vertical gradient.
+        for y in range(footer_h):
+            progress = y / max(1, footer_h - 1)
+            gray = int(245 - progress * 30)
+            for x in range(footer_w):
+                footer.putpixel((x, y), (gray, gray, gray, 255))
+
+        # Badge area gradient with soft rounding.
         box_top = 5
         box_bottom = 59
-
-        # Badge area
         badge_left = 8
         badge_right = 88
         for y in range(box_top, box_bottom):
             progress = max(0, min(1, (y - box_top) / (box_bottom - box_top - 1)))
-            gray_val = int(255 - progress * (255 - 215))
+            gray_val = int(235 - progress * 25)
             for x in range(badge_left, badge_right):
                 footer.putpixel((x, y), (gray_val, gray_val, gray_val, 255))
 
-        # Title area
+        # Title area gradient with rounded edges.
         text_box_left = 95
         text_box_right = 250
         for y in range(box_top, box_bottom):
             progress = max(0, min(1, (y - box_top) / (box_bottom - box_top - 1)))
-            gray_val = int(255 - progress * (255 - 215))
+            gray_val = int(235 - progress * 25)
             left_x = text_box_left
             right_x = text_box_right
             if y <= box_top + 1 or y >= box_bottom - 2:
-                left_x = text_box_left + 5
-                right_x = text_box_right - 5
+                left_x += 5
+                right_x -= 5
             elif y <= box_top + 3 or y >= box_bottom - 4:
-                left_x = text_box_left + 2
-                right_x = text_box_right - 2
+                left_x += 2
+                right_x -= 2
             for x in range(left_x, right_x):
                 footer.putpixel((x, y), (gray_val, gray_val, gray_val, 255))
 
@@ -529,7 +535,7 @@ class UniversalVCBannerPatcher:
         box_bottom = 59
         text_box_left = 95
         text_box_right = 250
-        max_w = (text_box_right - text_box_left) - 8
+        max_w = (text_box_right - text_box_left) - 12
         center_x = (text_box_left + text_box_right) // 2
 
         def measure(text: str, font) -> tuple[int, int]:
