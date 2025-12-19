@@ -358,7 +358,6 @@ class UniversalVCBannerPatcher:
         if Image is None:
             print("Warning: Pillow (PIL) not available; skipping footer patch")
             return
-
         title = (title or "").strip()
         subtitle = (subtitle or "").strip()
         if not title:
@@ -368,98 +367,8 @@ class UniversalVCBannerPatcher:
         footer = self.create_footer_image(title, subtitle)
         if footer is None:
             return
-        draw = ImageDraw.Draw(footer)
 
-        # Fonts: match GBA VC template if available (SCE-PS3-RD-R-LATIN.TTF, 16/12)
-        font_title = None
-        font_sub = None
-
-        candidate_fonts = []
-        # 1) If the user has the NSUI template alongside the Universal VC template, reuse its bundled font.
-        candidate_fonts.append(self.template_dir.parent / "nsui_template" / "SCE-PS3-RD-R-LATIN.TTF")
-        # 2) In case template dir contains it
-        candidate_fonts.append(self.template_dir / "SCE-PS3-RD-R-LATIN.TTF")
-        # 3) System fallbacks
-        candidate_fonts.extend(
-            [
-                Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-                Path("/usr/share/fonts/truetype/freefont/FreeSans.ttf"),
-            ]
-        )
-
-        for fp in candidate_fonts:
-            try:
-                if fp.exists():
-                    font_title = ImageFont.truetype(str(fp), 16)
-                    font_sub = ImageFont.truetype(str(fp), 12)
-                    break
-            except Exception:
-                continue
-
-        if font_title is None:
-            font_title = ImageFont.load_default()
-            font_sub = font_title
-
-        # Match GBA VC layout: left badge ~80px wide, right text box aligned/centered.
-        box_left = 8
-        box_right = 88
-        box_top = 8
-        box_bottom = 56
-        text_box_left = 96
-        text_box_right = 248
-        max_w = box_right - box_left
-        center_x = (text_box_left + text_box_right) // 2
-
-        def measure(text: str, font) -> tuple[int, int]:
-            bbox = draw.textbbox((0, 0), text, font=font)
-            return bbox[2] - bbox[0], bbox[3] - bbox[1]
-
-        badge_rect = (8, 8, 88, 56)
-        self._draw_virtual_console_branding(draw, font_title, badge_rect)
-
-        # Wrap title if needed
-        words = title.split()
-        lines: list[str] = []
-        current: list[str] = []
-        for word in words:
-            test = " ".join(current + [word])
-            if measure(test, font_title)[0] <= max_w:
-                current.append(word)
-            else:
-                if current:
-                    lines.append(" ".join(current))
-                current = [word]
-        if current:
-            lines.append(" ".join(current))
-
-        if len(lines) >= 2:
-            subtitle = ""
-
-        color_title = (32, 32, 32, 255)
-        color_sub = (40, 40, 40, 255)
-
-        if subtitle and lines:
-            tw, th = measure(lines[0], font_title)
-            sw, sh = measure(subtitle, font_sub)
-            total_h = th + 4 + sh
-            y = box_top + (box_bottom - box_top - total_h) // 2
-            draw.text((center_x - tw // 2, y), lines[0], fill=color_title, font=font_title)
-            draw.text((center_x - sw // 2, y + th + 4), subtitle, fill=color_sub, font=font_sub)
-        elif len(lines) == 1:
-            tw, th = measure(lines[0], font_title)
-            y = box_top + (box_bottom - box_top - th) // 2
-            draw.text((center_x - tw // 2, y), lines[0], fill=color_title, font=font_title)
-        else:
-            lines = (lines or [title])[:3]
-            heights = [measure(ln, font_title)[1] for ln in lines]
-            total_h = sum(heights) + 2 * (len(lines) - 1)
-            y = box_top + (box_bottom - box_top - total_h) // 2
-            for ln in lines:
-                tw, th = measure(ln, font_title)
-                draw.text((center_x - tw // 2, y), ln, fill=color_title, font=font_title)
-                y += th + 2
-
-        encoded = self._encode_la8(footer, footer_w, footer_h)
+        encoded = self._encode_la8(footer.convert("RGBA"), footer_w, footer_h)
         self.cgfx_data[self.FOOTER_OFFSET : self.FOOTER_OFFSET + len(encoded)] = encoded
         print(f"  Patched COMMON2 footer @ 0x{self.FOOTER_OFFSET:X}")
 
@@ -473,123 +382,16 @@ class UniversalVCBannerPatcher:
         if not title:
             return None
 
-        footer_w, footer_h = self.FOOTER_SIZE
-        # Build a fresh footer background to avoid leftover template text.
-        footer = Image.new("RGBA", (footer_w, footer_h), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(footer)
+        # Reuse GBA VC footer rendering for 1:1 layout/parity.
+        try:
+            from banner_tools.gba_vc_banner_patcher import GBAVCBannerPatcher
 
-        box_top = 5
-        box_bottom = 59
-        badge_left = 8
-        badge_right = 88
-        text_box_left = 95
-        text_box_right = 250
-
-        def rounded_mask(rect, radius):
-            left, top, right, bottom = rect
-            m = Image.new("L", (footer_w, footer_h), 0)
-            d = ImageDraw.Draw(m)
-            d.rounded_rectangle(rect, radius=radius, fill=255)
-            return m
-
-        def apply_gradient(rect, start_gray, end_gray, radius):
-            left, top, right, bottom = rect
-            grad = Image.new("RGBA", (footer_w, footer_h), (0, 0, 0, 0))
-            gd = ImageDraw.Draw(grad)
-            height = bottom - top
-            for y in range(top, bottom):
-                t = (y - top) / max(1, height - 1)
-                g = int(start_gray + t * (end_gray - start_gray))
-                gd.line([(left, y), (right, y)], fill=(g, g, g, 255))
-            footer.paste(grad, (0, 0), rounded_mask(rect, radius))
-
-        apply_gradient((badge_left, box_top, badge_right, box_bottom), 230, 200, radius=8)
-        apply_gradient((text_box_left, box_top, text_box_right, box_bottom), 230, 200, radius=8)
-
-        # Fonts: match GBA VC template if available (SCE-PS3-RD-R-LATIN.TTF, 16/12)
-        font_title = None
-        font_sub = None
-
-        candidate_fonts = []
-        candidate_fonts.append(self.template_dir.parent / "nsui_template" / "SCE-PS3-RD-R-LATIN.TTF")
-        candidate_fonts.append(self.template_dir / "SCE-PS3-RD-R-LATIN.TTF")
-        candidate_fonts.extend(
-            [
-                Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-                Path("/usr/share/fonts/truetype/freefont/FreeSans.ttf"),
-            ]
-        )
-
-        for fp in candidate_fonts:
-            try:
-                if fp.exists():
-                    font_title = ImageFont.truetype(str(fp), 16)
-                    font_sub = ImageFont.truetype(str(fp), 12)
-                    break
-            except Exception:
-                continue
-
-        if font_title is None:
-            font_title = ImageFont.load_default()
-            font_sub = font_title
-
-        # Right box area
-        box_top = 5
-        box_bottom = 59
-        text_box_left = 95
-        text_box_right = 250
-        max_w = (text_box_right - text_box_left) - 12
-        center_x = (text_box_left + text_box_right) // 2
-
-        def measure(text: str, font) -> tuple[int, int]:
-            bbox = draw.textbbox((0, 0), text, font=font)
-            return bbox[2] - bbox[0], bbox[3] - bbox[1]
-
-        self._draw_virtual_console_branding(draw, font_title, (badge_left, box_top, badge_right, box_bottom))
-
-        # Wrap title if needed
-        words = title.split()
-        lines: list[str] = []
-        current: list[str] = []
-        for word in words:
-            test = " ".join(current + [word])
-            if measure(test, font_title)[0] <= max_w:
-                current.append(word)
-            else:
-                if current:
-                    lines.append(" ".join(current))
-                current = [word]
-        if current:
-            lines.append(" ".join(current))
-
-        if len(lines) >= 2:
-            subtitle = ""
-
-        color_title = (32, 32, 32, 255)
-        color_sub = (40, 40, 40, 255)
-
-        if subtitle and lines:
-            tw, th = measure(lines[0], font_title)
-            sw, sh = measure(subtitle, font_sub)
-            total_h = th + 4 + sh
-            y = box_top + (box_bottom - box_top - total_h) // 2
-            draw.text((center_x - tw // 2, y), lines[0], fill=color_title, font=font_title)
-            draw.text((center_x - sw // 2, y + th + 4), subtitle, fill=color_sub, font=font_sub)
-        elif len(lines) == 1:
-            tw, th = measure(lines[0], font_title)
-            y = box_top + (box_bottom - box_top - th) // 2
-            draw.text((center_x - tw // 2, y), lines[0], fill=color_title, font=font_title)
-        else:
-            lines = (lines or [title])[:3]
-            heights = [measure(ln, font_title)[1] for ln in lines]
-            total_h = sum(heights) + 2 * (len(lines) - 1)
-            y = box_top + (box_bottom - box_top - total_h) // 2
-            for ln in lines:
-                tw, th = measure(ln, font_title)
-                draw.text((center_x - tw // 2, y), ln, fill=color_title, font=font_title)
-                y += th + 2
-
-        return footer
+            gba = GBAVCBannerPatcher(str(self.template_dir.parent / "nsui_template"))
+            footer_img = gba.create_footer_image(title, subtitle)
+            return footer_img
+        except Exception as e:
+            print(f"Warning: failed to render GBA VC footer: {e}")
+            return None
 
     def _draw_virtual_console_branding(self, draw: "ImageDraw.ImageDraw", font, badge_rect: tuple[int, int, int, int]) -> None:
         """Draw the two-line 'Virtual Console' badge text inside the given rect."""
