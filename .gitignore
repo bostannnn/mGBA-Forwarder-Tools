@@ -45,3 +45,10 @@ Thumbs.db
 # Temp files
 *.tmp
 *.temp
+
+# Secrets / local config
+.env
+.env.*
+
+# SteamGridDB cache (if output folder is inside repo)
+.sgdb_cache/
