@@ -25,12 +25,13 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 try:
-    from PIL import Image, ImageDraw, ImageFont, ImageStat
+    from PIL import Image, ImageDraw, ImageFont, ImageStat, ImageFilter
 except ImportError:
     Image = None
     ImageDraw = None
     ImageFont = None
     ImageStat = None
+    ImageFilter = None
 
 
 def compress_lz11(data: bytes) -> bytes:
@@ -121,6 +122,9 @@ class UniversalVCBannerPatcher:
     # COMMON2 footer offset (LA8, 256x64)
     FOOTER_OFFSET = 0x1AD80
     FOOTER_SIZE = (256, 64)
+
+    # NSUI footer offset for region CGFX (LA8, 256x64)
+    NSUI_FOOTER_OFFSET = 0x1980
 
 
     def __init__(self, template_dir: str):
@@ -340,7 +344,12 @@ class UniversalVCBannerPatcher:
             return None
 
         footer_w, footer_h = self.FOOTER_SIZE
-        footer = self._decode_la8(self.FOOTER_OFFSET, footer_w, footer_h)
+        nsui_region = self.template_dir.parent / "nsui_template" / "region_01_USA_EN.cgfx"
+        if not nsui_region.exists():
+            return None
+        footer = self._decode_la8_external(
+            nsui_region.read_bytes(), self.NSUI_FOOTER_OFFSET, footer_w, footer_h
+        )
         draw = ImageDraw.Draw(footer)
 
         # Clear the title text area with the same gradient used by NSUI.
@@ -389,27 +398,6 @@ class UniversalVCBannerPatcher:
         if font_title is None:
             font_title = ImageFont.load_default()
             font_subtitle = font_title
-
-        badge_rect = (8, 10, 84, 54)
-        nsui_region = self.template_dir.parent / "nsui_template" / "region_01_USA_EN.cgfx"
-        if nsui_region.exists():
-            try:
-                nsui_data = nsui_region.read_bytes()
-                badge_img = self._decode_la8_external(nsui_data, self.COMMON2_OFFSET, footer_w, footer_h)
-                badge_crop = badge_img.crop(badge_rect)
-                footer.paste(badge_crop, badge_rect[:2])
-            except Exception:
-                pass
-        badge_font = None
-        if bundled_font.exists():
-            try:
-                badge_font = ImageFont.truetype(str(bundled_font), 12)
-            except Exception:
-                badge_font = None
-        if badge_font is None:
-            badge_font = font_subtitle
-        # Ensure the badge text reads "Virtual Console" even if the template says "Custom".
-        self._draw_virtual_console_branding(draw, badge_font, badge_rect)
 
         def draw_centered(text: str, y: int, font, color):
             bbox = draw.textbbox((0, 0), text, font=font)

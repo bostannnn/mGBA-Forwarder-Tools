@@ -50,12 +50,19 @@ DEFAULT_TEMPLATE = 'gba_vc'
 
 
 def check_docker():
-    """Check if Docker is available and image is built."""
+    """Check if Docker is available, accessible, and image is built."""
     try:
-        result = subprocess.run(['docker', 'images', '-q', 'mgba-forwarder'],
-                              capture_output=True, text=True, timeout=5)
+        result = subprocess.run(
+            ['docker', 'images', '-q', 'mgba-forwarder'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
         if result.returncode == 0:
             return 'ready' if result.stdout.strip() else 'no_image'
+        err = (result.stderr or result.stdout or "").lower()
+        if "permission denied" in err or "docker.sock" in err:
+            return 'no_access'
         return 'not_found'
     except FileNotFoundError:
         return 'not_found'
@@ -778,6 +785,10 @@ class ForwarderWindow(Adw.ApplicationWindow):
             self.docker_row.set_subtitle("Image not built")
             self.docker_build_btn.set_sensitive(True)
             self.docker_rebuild_btn.set_sensitive(False)
+        elif self.docker_status == 'no_access':
+            self.docker_row.set_subtitle("Docker permission denied (check docker group)")
+            self.docker_build_btn.set_sensitive(False)
+            self.docker_rebuild_btn.set_sensitive(False)
         else:
             self.docker_row.set_subtitle("Docker not found")
             self.docker_build_btn.set_sensitive(True)
@@ -857,6 +868,13 @@ class ForwarderWindow(Adw.ApplicationWindow):
 
                     patcher = GBAVCBannerPatcher(str(self.template_dir))
                     img = patcher.create_footer_image(str(title), str(subtitle))
+                    if img is None:
+                        magick_path = self._write_footer_preview_magick(
+                            self.current_template_key, self.template_dir, title, subtitle
+                        )
+                        if magick_path:
+                            GLib.idle_add(self._load_footer_preview, str(magick_path))
+                        return
                     img.save(str(preview_path))
                 elif self.current_template_key == "universal_vc":
                     from banner_tools.universal_vc_banner_patcher import UniversalVCBannerPatcher
@@ -864,9 +882,11 @@ class ForwarderWindow(Adw.ApplicationWindow):
                     patcher = UniversalVCBannerPatcher(str(self.template_dir))
                     img = patcher.create_footer_image(str(title), str(subtitle))
                     if img is None:
-                        simple = self._simple_footer_preview(title, subtitle)
-                        if simple:
-                            GLib.idle_add(self._load_footer_preview, str(simple))
+                        magick_path = self._write_footer_preview_magick(
+                            self.current_template_key, self.template_dir, title, subtitle
+                        )
+                        if magick_path:
+                            GLib.idle_add(self._load_footer_preview, str(magick_path))
                         return
                     img.save(str(preview_path))
                 else:
@@ -876,43 +896,18 @@ class ForwarderWindow(Adw.ApplicationWindow):
                     GLib.idle_add(self._load_footer_preview, str(preview_path))
                     return
             except Exception:
-                simple = self._simple_footer_preview(title, subtitle)
-                if simple:
-                    GLib.idle_add(self._load_footer_preview, str(simple))
+                magick_path = self._write_footer_preview_magick(
+                    self.current_template_key, self.template_dir, title, subtitle
+                )
+                if magick_path:
+                    GLib.idle_add(self._load_footer_preview, str(magick_path))
                 return
 
-            # Fallback: simple text preview
-            cmd = [
-                'python3', '-c', f'''
-from PIL import Image, ImageDraw, ImageFont
-img = Image.new("RGBA", (256, 64), (40, 40, 40, 255))
-draw = ImageDraw.Draw(img)
-try:
-    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
-    font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
-except:
-    font = ImageFont.load_default()
-    font_small = font
-title = """{title}"""
-subtitle = """{subtitle}"""
-# Draw title
-bbox = draw.textbbox((0, 0), title, font=font)
-tw = bbox[2] - bbox[0]
-x = (256 - tw) // 2
-y = 18 if subtitle else 24
-draw.text((x, y), title, fill=(255, 255, 255, 255), font=font)
-# Draw subtitle if present
-if subtitle:
-    bbox = draw.textbbox((0, 0), subtitle, font=font_small)
-    sw = bbox[2] - bbox[0]
-    x = (256 - sw) // 2
-    draw.text((x, y + 20), subtitle, fill=(180, 180, 180, 255), font=font_small)
-img.save("{preview_path}")
-'''
-            ]
-            subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-            if preview_path.exists():
-                GLib.idle_add(self._load_footer_preview, str(preview_path))
+            magick_path = self._write_footer_preview_magick(
+                self.current_template_key, self.template_dir, title, subtitle
+            )
+            if magick_path:
+                GLib.idle_add(self._load_footer_preview, str(magick_path))
         except Exception:
             pass
 
@@ -1082,6 +1077,8 @@ img.save("{preview_path}")
 
                 patcher = GBAVCBannerPatcher(str(template_dir))
                 img = patcher.create_footer_image(title, subtitle)
+                if img is None:
+                    return self._write_footer_preview_magick(template_key, template_dir, title, subtitle)
                 img.save(str(out_path))
                 return str(out_path)
 
@@ -1091,13 +1088,13 @@ img.save("{preview_path}")
                 patcher = UniversalVCBannerPatcher(str(template_dir))
                 img = patcher.create_footer_image(title, subtitle)
                 if img is None:
-                    return self._simple_footer_preview(title, subtitle)
+                    return self._write_footer_preview_magick(template_key, template_dir, title, subtitle)
                 img.save(str(out_path))
                 return str(out_path)
 
-            return self._simple_footer_preview(title, subtitle)
+            return self._write_footer_preview_magick(template_key, template_dir, title, subtitle)
         except Exception:
-            return self._simple_footer_preview(title, subtitle)
+            return self._write_footer_preview_magick(template_key, template_dir, title, subtitle)
 
     def _simple_footer_preview(self, title: str, subtitle: str) -> str | None:
         """Fallback footer preview using Pillow only."""
@@ -1137,6 +1134,156 @@ img.save("{preview_path}")
         except Exception:
             return None
 
+    def _write_footer_preview_magick(
+        self, template_key: str, template_dir: Path, title: str, subtitle: str
+    ) -> str | None:
+        """Render footer preview using ImageMagick (no Pillow)."""
+        try:
+            footer_w, footer_h = 256, 64
+            nsui_dir = template_dir if template_key == "gba_vc" else template_dir.parent / "nsui_template"
+            region = nsui_dir / "region_01_USA_EN.cgfx"
+            if not region.exists():
+                return None
+
+            raw = self._decode_la8_to_raw(region.read_bytes(), 0x1980, footer_w, footer_h)
+            out_dir = Path(tempfile.gettempdir()) / "mgba_forwarder_previews"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            raw_path = out_dir / "footer_raw_rgba.bin"
+            base_path = out_dir / "footer_base.png"
+            out_path = out_dir / f"footer_magick_{hash((title, subtitle, template_key)) & 0xFFFFFFFF:08x}.png"
+            raw_path.write_bytes(raw)
+
+            subprocess.run(
+                ["magick", "-size", "256x64", "-depth", "8", f"rgba:{raw_path}", str(base_path)],
+                check=True,
+                capture_output=True,
+            )
+
+            subprocess.run(
+                ["magick", str(base_path), "-draw", self._magick_gradient_clear_draw(), str(base_path)],
+                check=True,
+                capture_output=True,
+            )
+
+            font_path = nsui_dir / "SCE-PS3-RD-R-LATIN.TTF"
+            if not font_path.exists():
+                font_path = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+
+            title = (title or "").strip()
+            subtitle = (subtitle or "").strip()
+            lines = self._wrap_text_magick(title, str(font_path), 16, 148)
+            if len(lines) >= 2:
+                subtitle = ""
+
+            annotate = ["magick", str(base_path)]
+            if len(lines) == 1:
+                if subtitle:
+                    x = self._center_text_x_magick(lines[0], str(font_path), 16, 172)
+                    annotate += ["-font", str(font_path), "-pointsize", "16", "-fill", "rgb(32,32,32)",
+                                 "-gravity", "northwest", "-annotate", f"+{x}+14", lines[0]]
+                    sx = self._center_text_x_magick(subtitle, str(font_path), 12, 172)
+                    annotate += ["-font", str(font_path), "-pointsize", "12", "-fill", "rgb(40,40,40)",
+                                 "-annotate", f"+{sx}+36", subtitle]
+                else:
+                    x = self._center_text_x_magick(lines[0], str(font_path), 16, 172)
+                    annotate += ["-font", str(font_path), "-pointsize", "16", "-fill", "rgb(32,32,32)",
+                                 "-gravity", "northwest", "-annotate", f"+{x}+22", lines[0]]
+            elif len(lines) == 2:
+                x1 = self._center_text_x_magick(lines[0], str(font_path), 16, 172)
+                x2 = self._center_text_x_magick(lines[1], str(font_path), 16, 172)
+                annotate += ["-font", str(font_path), "-pointsize", "16", "-fill", "rgb(32,32,32)",
+                             "-gravity", "northwest",
+                             "-annotate", f"+{x1}+12", lines[0],
+                             "-annotate", f"+{x2}+32", lines[1]]
+            else:
+                y = 5
+                for line in lines[:3]:
+                    x = self._center_text_x_magick(line, str(font_path), 16, 172)
+                    annotate += ["-font", str(font_path), "-pointsize", "16", "-fill", "rgb(32,32,32)",
+                                 "-gravity", "northwest", "-annotate", f"+{x}+{y}", line]
+                    y += 18
+
+            annotate.append(str(out_path))
+            subprocess.run(annotate, check=True, capture_output=True)
+            return str(out_path)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _decode_la8_to_raw(data: bytes, offset: int, width: int, height: int) -> bytes:
+        """Decode LA8 morton-tiled texture to raw RGBA bytes (no Pillow)."""
+        def morton_index(x, y):
+            morton = 0
+            for i in range(3):
+                morton |= ((x >> i) & 1) << (2 * i)
+                morton |= ((y >> i) & 1) << (2 * i + 1)
+            return morton
+
+        out = bytearray(width * height * 4)
+        tiles_x, tiles_y = width // 8, height // 8
+        for ty in range(tiles_y):
+            for tx in range(tiles_x):
+                tile_off = offset + (ty * tiles_x + tx) * 128
+                for py in range(8):
+                    for px in range(8):
+                        idx = tile_off + morton_index(px, py) * 2
+                        if idx + 1 >= len(data):
+                            continue
+                        a = data[idx]
+                        l = data[idx + 1]
+                        x = tx * 8 + px
+                        y = ty * 8 + py
+                        o = (y * width + x) * 4
+                        out[o:o + 4] = bytes((l, l, l, a))
+        return bytes(out)
+
+    @staticmethod
+    def _magick_gradient_clear_draw() -> str:
+        parts = []
+        for y in range(5, 59):
+            progress = max(0.0, min(1.0, (y - 5) / 53.0))
+            gray_val = int(255 - progress * (255 - 215))
+            left_x = 95
+            right_x = 250
+            if y <= 6 or y >= 57:
+                left_x = 100
+                right_x = 245
+            elif y <= 8 or y >= 55:
+                left_x = 97
+                right_x = 248
+            parts.append(f"fill rgb({gray_val},{gray_val},{gray_val}) rectangle {left_x},{y} {right_x},{y+1}")
+        return " ".join(parts)
+
+    @staticmethod
+    def _measure_text_width_magick(text: str, font_path: str, size: int) -> int:
+        result = subprocess.run(
+            ["magick", "-font", font_path, "-pointsize", str(size), f"label:{text}", "-format", "%w", "info:"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return int(result.stdout.strip() or 0)
+
+    def _center_text_x_magick(self, text: str, font_path: str, size: int, center_x: int) -> int:
+        w = self._measure_text_width_magick(text, font_path, size)
+        return max(0, center_x - w // 2)
+
+    def _wrap_text_magick(self, text: str, font_path: str, size: int, max_w: int) -> list[str]:
+        words = text.split()
+        lines: list[str] = []
+        current: list[str] = []
+        for word in words:
+            test_line = " ".join(current + [word])
+            if self._measure_text_width_magick(test_line, font_path, size) <= max_w:
+                current.append(word)
+            else:
+                if current:
+                    lines.append(" ".join(current))
+                current = [word]
+        if current:
+            lines.append(" ".join(current))
+        return lines
+
     def _build_forwarder_item(
         self,
         item: BatchItem,
@@ -1156,6 +1303,7 @@ img.save("{preview_path}")
         """
         start = time.perf_counter()
         work_dir = Path(tempfile.mkdtemp())
+        log_path = Path(tempfile.gettempdir()) / "mgba_forwarder_build.log"
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
             if not item.sd_path:
@@ -1196,8 +1344,10 @@ img.save("{preview_path}")
 
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0 or not banner_out.exists():
-                err = (result.stderr or result.stdout or "Banner failed")[:200]
-                return False, None, f"Banner failed for {footer_title}: {err}"
+                err_out = (result.stderr or "") + (result.stdout or "")
+                log_path.write_text(err_out or "Banner failed (no output)\n", encoding="utf-8")
+                err = (err_out or "Banner failed").strip()[:200]
+                return False, None, f"Banner failed for {footer_title}: {err} (see {log_path})"
             print(f"[build] banner done: {footer_title} in {time.perf_counter() - start:.2f}s", flush=True)
 
             if progress_cb:
@@ -1233,8 +1383,10 @@ img.save("{preview_path}")
             ]
             result = subprocess.run(docker_cmd, capture_output=True, text=True, timeout=300)
             if result.returncode != 0 or not (work_dir / "output.cia").exists():
-                err = (result.stderr or result.stdout or "CIA failed")[-200:]
-                return False, None, f"CIA failed for {footer_title}: {err}"
+                err_out = (result.stderr or "") + (result.stdout or "")
+                log_path.write_text(err_out or "CIA failed (no output)\n", encoding="utf-8")
+                err = (err_out or "CIA failed").strip()[-200:]
+                return False, None, f"CIA failed for {footer_title}: {err} (see {log_path})"
             print(f"[build] docker done: {footer_title} in {time.perf_counter() - docker_start:.2f}s", flush=True)
 
             safe_name = self._safe_title(footer_title)

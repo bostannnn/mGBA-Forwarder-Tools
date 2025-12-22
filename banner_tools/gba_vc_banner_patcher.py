@@ -20,7 +20,15 @@ Final Banner Structure:
 
 import struct
 import os
-from PIL import Image, ImageDraw, ImageFont
+import subprocess
+import tempfile
+from pathlib import Path
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
 
 
 # ============================================================================
@@ -431,6 +439,9 @@ class GBAVCBannerPatcher:
             image_path: Path to 128x128 image
             bg_color: Optional background color as (R, G, B) tuple (0-255)
         """
+        if Image is None:
+            print("Warning: Pillow (PIL) not available; skipping COMMON1 patch")
+            return
         img = Image.open(image_path)
         encoded = encode_rgb565_tiled(img, 128, 128, bg_color)
 
@@ -450,6 +461,9 @@ class GBAVCBannerPatcher:
         Args:
             image_path: Path to 256x64 image
         """
+        if Image is None:
+            print("Warning: Pillow (PIL) not available; skipping COMMON2 patch")
+            return
         img = Image.open(image_path)
         encoded = encode_la8_morton(img, 256, 64)
         
@@ -480,6 +494,10 @@ class GBAVCBannerPatcher:
         Returns:
             PIL Image object
         """
+        if Image is None:
+            if save_path:
+                self._create_footer_image_magick(title, subtitle, save_path)
+            return None
         # Load the original NSUI region template to get footer background
         template_file = os.path.join(self.template_dir, 'region_01_USA_EN.cgfx')
         
@@ -599,6 +617,152 @@ class GBAVCBannerPatcher:
             footer.save(save_path)
         
         return footer
+
+    def _create_footer_image_magick(self, title, subtitle, save_path):
+        """Render footer with ImageMagick when Pillow is unavailable."""
+        try:
+            template_file = os.path.join(self.template_dir, 'region_01_USA_EN.cgfx')
+            with open(template_file, 'rb') as f:
+                region_data = f.read()
+            raw = self._decode_la8_to_raw(region_data, self.COMMON2_OFFSET, 256, 64)
+            tmp_dir = Path(tempfile.gettempdir())
+            raw_path = tmp_dir / "footer_raw_rgba.bin"
+            base_path = tmp_dir / "footer_base.png"
+            raw_path.write_bytes(raw)
+
+            subprocess.run(
+                ["magick", "-size", "256x64", "-depth", "8", f"rgba:{raw_path}", str(base_path)],
+                check=True,
+                capture_output=True,
+            )
+
+            title = (title or "").strip()
+            subtitle = (subtitle or "").strip()
+            if not title:
+                return
+
+            # Clear title text area (same gradient as PIL path).
+            subprocess.run(
+                [
+                    "magick",
+                    str(base_path),
+                    "-fill",
+                    "none",
+                    "-alpha",
+                    "on",
+                    "-draw",
+                    self._magick_gradient_clear_draw(),
+                    str(base_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+
+            font_path = os.path.join(self.template_dir, "SCE-PS3-RD-R-LATIN.TTF")
+            if not os.path.exists(font_path):
+                font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+            lines = self._wrap_text_magick(title, font_path, 16, 148)
+            if len(lines) >= 2:
+                subtitle = ""
+
+            annotate = ["magick", str(base_path)]
+            if len(lines) == 1:
+                if subtitle:
+                    x = self._center_text_x(lines[0], font_path, 16, 172)
+                    annotate += ["-font", font_path, "-pointsize", "16", "-fill", "rgb(32,32,32)",
+                                 "-gravity", "northwest", "-annotate", f"+{x}+14", lines[0]]
+                    sx = self._center_text_x(subtitle, font_path, 12, 172)
+                    annotate += ["-font", font_path, "-pointsize", "12", "-fill", "rgb(40,40,40)",
+                                 "-annotate", f"+{sx}+36", subtitle]
+                else:
+                    x = self._center_text_x(lines[0], font_path, 16, 172)
+                    annotate += ["-font", font_path, "-pointsize", "16", "-fill", "rgb(32,32,32)",
+                                 "-gravity", "northwest", "-annotate", f"+{x}+22", lines[0]]
+            elif len(lines) == 2:
+                x1 = self._center_text_x(lines[0], font_path, 16, 172)
+                x2 = self._center_text_x(lines[1], font_path, 16, 172)
+                annotate += ["-font", font_path, "-pointsize", "16", "-fill", "rgb(32,32,32)",
+                             "-gravity", "northwest",
+                             "-annotate", f"+{x1}+12", lines[0],
+                             "-annotate", f"+{x2}+32", lines[1]]
+            else:
+                y = 5
+                for line in lines[:3]:
+                    x = self._center_text_x(line, font_path, 16, 172)
+                    annotate += ["-font", font_path, "-pointsize", "16", "-fill", "rgb(32,32,32)",
+                                 "-gravity", "northwest", "-annotate", f"+{x}+{y}", line]
+                    y += 18
+
+            annotate.append(save_path)
+            subprocess.run(annotate, check=True, capture_output=True)
+        except Exception:
+            pass
+
+    def _decode_la8_to_raw(self, data, offset, width, height):
+        """Decode LA8 Morton-tiled texture to raw RGBA bytes (no Pillow)."""
+        out = bytearray(width * height * 4)
+        tiles_x, tiles_y = width // 8, height // 8
+
+        for ty in range(tiles_y):
+            for tx in range(tiles_x):
+                tile_off = offset + (ty * tiles_x + tx) * 128
+                for py in range(8):
+                    for px in range(8):
+                        idx = tile_off + morton_index(px, py) * 2
+                        if idx + 2 <= len(data):
+                            a, l = data[idx:idx + 2]
+                            x = tx * 8 + px
+                            y = ty * 8 + py
+                            o = (y * width + x) * 4
+                            out[o:o + 4] = bytes((l, l, l, a))
+        return bytes(out)
+
+    def _magick_gradient_clear_draw(self):
+        """Return a draw command that clears the title area with the NSUI gradient."""
+        cmds = []
+        for y in range(5, 59):
+            progress = max(0, min(1, (y - 5) / 53.0))
+            gray_val = int(255 - progress * (255 - 215))
+            left_x = 95
+            right_x = 250
+            if y <= 6 or y >= 57:
+                left_x = 100
+                right_x = 245
+            elif y <= 8 or y >= 55:
+                left_x = 97
+                right_x = 248
+            cmds.append(f"fill rgb({gray_val},{gray_val},{gray_val}) rectangle {left_x},{y} {right_x},{y+1}")
+        return " ".join(cmds)
+
+    def _measure_text_width(self, text, font_path, size):
+        result = subprocess.run(
+            ["magick", "-font", font_path, "-pointsize", str(size), f"label:{text}", "-format", "%w", "info:"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return int(result.stdout.strip() or 0)
+
+    def _center_text_x(self, text, font_path, size, center_x):
+        w = self._measure_text_width(text, font_path, size)
+        return max(0, center_x - w // 2)
+
+    def _wrap_text_magick(self, text, font_path, size, max_w):
+        words = text.split()
+        lines = []
+        current = []
+        for word in words:
+            test_line = " ".join(current + [word])
+            if self._measure_text_width(test_line, font_path, size) <= max_w:
+                current.append(word)
+            else:
+                if current:
+                    lines.append(" ".join(current))
+                current = [word]
+        if current:
+            lines.append(" ".join(current))
+        return lines
     
     def _decode_la8_texture(self, data, offset, width, height):
         """Decode LA8 Morton-tiled texture to RGBA image"""
