@@ -239,76 +239,74 @@ def decode_la8_morton(data, offset, width, height):
 # ============================================================================
 
 def compress_lz11(data):
-    """Compress data using LZ11 algorithm"""
+    """
+    Compress data using a faster, simplified LZ11 encoder.
+
+    This prioritizes speed over maximum compression ratio; acceptable for banners.
+    """
     result = bytearray()
-    
-    # Header: 0x11 + 24-bit size
     size = len(data)
-    result.append(0x11)
-    result.append(size & 0xFF)
-    result.append((size >> 8) & 0xFF)
-    result.append((size >> 16) & 0xFF)
-    
+    result.extend([0x11, size & 0xFF, (size >> 8) & 0xFF, (size >> 16) & 0xFF])
+
     pos = 0
-    
-    while pos < len(data):
-        block_flags = 0
-        block_data = bytearray()
-        
+    max_window = 0x1000  # 4096
+
+    while pos < size:
+        flags_pos = len(result)
+        result.append(0)  # placeholder for flags
+        flags = 0
         for bit in range(8):
-            if pos >= len(data):
+            if pos >= size:
                 break
-            
-            # Search for best match in sliding window
+
             best_len = 0
             best_disp = 0
-            search_start = max(0, pos - 4096)
-            
-            for search_pos in range(search_start, pos):
-                match_len = 0
-                max_len = min(0x10110, len(data) - pos)
-                
-                while match_len < max_len:
-                    src_pos = search_pos + (match_len % (pos - search_pos))
-                    if data[src_pos] == data[pos + match_len]:
-                        match_len += 1
-                    else:
-                        break
-                
-                if match_len >= 3 and match_len > best_len:
-                    best_len = match_len
-                    best_disp = pos - search_pos
-            
+            window_start = max(0, pos - max_window)
+            window = memoryview(data)[window_start:pos]
+            max_len = min(0x10110, size - pos)
+
+            if len(window) >= 3:
+                seed = bytes(data[pos : pos + 3])
+                search_pos = bytes(window).rfind(seed, 0, len(window))
+                while search_pos != -1:
+                    disp = pos - (window_start + search_pos)
+                    match_len = 3
+                    while match_len < max_len:
+                        next_len = min(match_len + 32, max_len)
+                        if data[pos + match_len : pos + next_len] != data[pos + match_len - disp : pos + next_len - disp]:
+                            break
+                        match_len = next_len
+                    if match_len > best_len:
+                        best_len = match_len
+                        best_disp = disp
+                        if best_len >= max_len:
+                            break
+                    search_pos = bytes(window).rfind(seed, 0, search_pos)
+
             if best_len >= 3:
-                block_flags |= (0x80 >> bit)
+                flags |= 0x80 >> bit
                 disp_m1 = best_disp - 1
-                
                 if best_len <= 0x10:
-                    byte1 = ((best_len - 1) << 4) | ((disp_m1 >> 8) & 0x0F)
-                    byte2 = disp_m1 & 0xFF
-                    block_data.extend([byte1, byte2])
+                    result.append(((best_len - 1) << 4) | ((disp_m1 >> 8) & 0x0F))
+                    result.append(disp_m1 & 0xFF)
                 elif best_len <= 0x110:
                     adj_len = best_len - 0x11
-                    byte1 = (adj_len >> 4) & 0x0F
-                    byte2 = ((adj_len & 0x0F) << 4) | ((disp_m1 >> 8) & 0x0F)
-                    byte3 = disp_m1 & 0xFF
-                    block_data.extend([byte1, byte2, byte3])
+                    result.append((adj_len >> 4) & 0x0F)
+                    result.append(((adj_len & 0x0F) << 4) | ((disp_m1 >> 8) & 0x0F))
+                    result.append(disp_m1 & 0xFF)
                 else:
                     adj_len = best_len - 0x111
-                    byte1 = 0x10 | ((adj_len >> 12) & 0x0F)
-                    byte2 = (adj_len >> 4) & 0xFF
-                    byte3 = ((adj_len & 0x0F) << 4) | ((disp_m1 >> 8) & 0x0F)
-                    byte4 = disp_m1 & 0xFF
-                    block_data.extend([byte1, byte2, byte3, byte4])
-                
+                    result.append(0x10 | ((adj_len >> 12) & 0x0F))
+                    result.append((adj_len >> 4) & 0xFF)
+                    result.append(((adj_len & 0x0F) << 4) | ((disp_m1 >> 8) & 0x0F))
+                    result.append(disp_m1 & 0xFF)
                 pos += best_len
             else:
-                block_data.append(data[pos])
+                result.append(data[pos])
                 pos += 1
-        
-        result.append(block_flags)
-        result.extend(block_data)
-    
+
+        result[flags_pos] = flags
+
     return bytes(result)
 
 

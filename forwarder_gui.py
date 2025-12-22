@@ -111,9 +111,6 @@ class ForwarderWindow(Adw.ApplicationWindow):
         self.cartridge_path = None
         self.output_path = Path.home() / "3ds-forwarders"
 
-        # Cartridge shell/background tint (Universal VC only)
-        self.shell_color = None  # None means use template default
-
         # Batch mode
         self.batch_rom_dir: Path | None = None
         self.batch_items: list[BatchItem] = []
@@ -122,7 +119,6 @@ class ForwarderWindow(Adw.ApplicationWindow):
         # Batch banner settings (separate from Single)
         self.batch_template_key = DEFAULT_TEMPLATE
         self.batch_template_dir = self._get_template_path(self.batch_template_key)
-        self.batch_shell_color: tuple[int, int, int] | None = None
         self._batch_expanded_keys: set[str] = set()
 
         # SteamGridDB
@@ -207,39 +203,6 @@ class ForwarderWindow(Adw.ApplicationWindow):
             print(msg, flush=True)
             self.set_status(msg, error=True)
 
-    def _refresh_single_shell_row(self) -> None:
-        """Show or remove the single-tab shell row to avoid blank dividers."""
-        row = getattr(self, "shell_color_row", None)
-        group = getattr(self, "single_banner_group", None)
-        if row is None or group is None:
-            return
-
-        try:
-            parent = row.get_parent()
-        except Exception:
-            parent = None
-
-        # Keep the row in place; just toggle visibility so ordering stays fixed.
-        if parent is None:
-            group.add(row)
-        row.set_visible(self.current_template_key == "universal_vc")
-
-    def _refresh_batch_shell_row(self) -> None:
-        """Show or remove the batch shell row to avoid blank dividers."""
-        row = getattr(self, "batch_shell_color_row", None)
-        group = getattr(self, "batch_settings_group", None)
-        if row is None or group is None:
-            return
-
-        try:
-            parent = row.get_parent()
-        except Exception:
-            parent = None
-
-        if parent is None:
-            group.add(row)
-        row.set_visible(self.batch_template_key == "universal_vc")
-    
     def _setup_ui(self):
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.set_content(main_box)
@@ -376,45 +339,22 @@ class ForwarderWindow(Adw.ApplicationWindow):
         content.append(banner_group)
 
         # Template Selection
-        self.template_combo_row = Adw.ComboRow(title="Banner Template")
-        template_model = Gtk.StringList()
-        self.template_keys = []
+        self.template_row = Adw.ActionRow(title="Banner Template")
+        self.template_row.set_subtitle(TEMPLATES[self.current_template_key]["description"])
+        self.template_buttons: dict[str, Gtk.ToggleButton] = {}
+        self._template_toggle_updating = False
+        template_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        template_box.set_halign(Gtk.Align.END)
         for key, info in TEMPLATES.items():
-            template_model.append(info['name'])
-            self.template_keys.append(key)
-        self.template_combo_row.set_model(template_model)
-
-        if DEFAULT_TEMPLATE in self.template_keys:
-            idx = self.template_keys.index(DEFAULT_TEMPLATE)
-            self.template_combo_row.set_selected(idx)
-            self.template_combo_row.set_subtitle(TEMPLATES[DEFAULT_TEMPLATE]['description'])
-
-        self.template_combo_row.connect("notify::selected", self._on_template_changed)
-        banner_group.add(self.template_combo_row)
-
-        # Cartridge Shell Color (Universal VC) — shown directly under template
-        self.shell_color_row = Adw.ActionRow(
-            title="Cartridge Shell Color",
-            subtitle="Tint cartridge/body (template default if unset)"
-        )
-        self.shell_color_preview_box = Gtk.DrawingArea()
-        self.shell_color_preview_box.set_size_request(32, 32)
-        self.shell_color_preview_box.set_valign(Gtk.Align.CENTER)
-        self.shell_color_preview_box.set_draw_func(self._draw_shell_color_preview)
-
-        shell_clear_btn = Gtk.Button(icon_name="edit-clear-symbolic", valign=Gtk.Align.CENTER)
-        shell_clear_btn.add_css_class("flat")
-        shell_clear_btn.set_tooltip_text("Reset to template default")
-        shell_clear_btn.connect("clicked", self._clear_shell_color)
-
-        shell_btn = Gtk.Button(label="Pick Color", valign=Gtk.Align.CENTER)
-        shell_btn.connect("clicked", self.on_pick_shell_color)
-
-        self.shell_color_row.add_suffix(self.shell_color_preview_box)
-        self.shell_color_row.add_suffix(shell_clear_btn)
-        self.shell_color_row.add_suffix(shell_btn)
-        banner_group.add(self.shell_color_row)
-        self._refresh_single_shell_row()
+            btn = Gtk.ToggleButton(label=info["name"])
+            btn.set_valign(Gtk.Align.CENTER)
+            btn.connect("toggled", self._on_template_button_toggled, key)
+            self.template_buttons[key] = btn
+            template_box.append(btn)
+        if self.current_template_key in self.template_buttons:
+            self.template_buttons[self.current_template_key].set_active(True)
+        self.template_row.set_child(template_box)
+        banner_group.add(self.template_row)
 
         # Icon Image
         self.icon_row = Adw.ActionRow(
@@ -559,37 +499,22 @@ class ForwarderWindow(Adw.ApplicationWindow):
         self.batch_settings_group = settings_group
         content.append(settings_group)
 
-        self.batch_template_combo_row = Adw.ComboRow(title="Banner Template")
-        batch_model = Gtk.StringList()
-        self.batch_template_keys = []
+        self.batch_template_row = Adw.ActionRow(title="Banner Template")
+        self.batch_template_row.set_subtitle(TEMPLATES[self.batch_template_key]["description"])
+        self.batch_template_buttons: dict[str, Gtk.ToggleButton] = {}
+        self._batch_template_toggle_updating = False
+        batch_template_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        batch_template_box.set_halign(Gtk.Align.END)
         for key, info in TEMPLATES.items():
-            batch_model.append(info["name"])
-            self.batch_template_keys.append(key)
-        self.batch_template_combo_row.set_model(batch_model)
-        if self.batch_template_key in self.batch_template_keys:
-            self.batch_template_combo_row.set_selected(self.batch_template_keys.index(self.batch_template_key))
-            self.batch_template_combo_row.set_subtitle(TEMPLATES[self.batch_template_key]["description"])
-        self.batch_template_combo_row.connect("notify::selected", self._on_batch_template_changed)
-        settings_group.add(self.batch_template_combo_row)
-
-        self.batch_shell_color_row = Adw.ActionRow(
-            title="Cartridge Shell Color",
-            subtitle="Tint cartridge/body (template default if unset)"
-        )
-        self.batch_shell_color_preview = Gtk.DrawingArea()
-        self.batch_shell_color_preview.set_size_request(32, 32)
-        self.batch_shell_color_preview.set_valign(Gtk.Align.CENTER)
-        self.batch_shell_color_preview.set_draw_func(self._draw_batch_shell_preview)
-        batch_shell_clear = Gtk.Button(icon_name="edit-clear-symbolic", valign=Gtk.Align.CENTER)
-        batch_shell_clear.add_css_class("flat")
-        batch_shell_clear.set_tooltip_text("Reset to template default")
-        batch_shell_clear.connect("clicked", lambda *_: self._set_batch_shell_color(None))
-        batch_shell_pick = Gtk.Button(label="Pick Color", valign=Gtk.Align.CENTER)
-        batch_shell_pick.connect("clicked", self.on_pick_batch_shell_color)
-        self.batch_shell_color_row.add_suffix(self.batch_shell_color_preview)
-        self.batch_shell_color_row.add_suffix(batch_shell_clear)
-        self.batch_shell_color_row.add_suffix(batch_shell_pick)
-        self._refresh_batch_shell_row()
+            btn = Gtk.ToggleButton(label=info["name"])
+            btn.set_valign(Gtk.Align.CENTER)
+            btn.connect("toggled", self._on_batch_template_button_toggled, key)
+            self.batch_template_buttons[key] = btn
+            batch_template_box.append(btn)
+        if self.batch_template_key in self.batch_template_buttons:
+            self.batch_template_buttons[self.batch_template_key].set_active(True)
+        self.batch_template_row.set_child(batch_template_box)
+        settings_group.add(self.batch_template_row)
 
         roms_group = Adw.PreferencesGroup()
         content.append(roms_group)
@@ -822,14 +747,27 @@ class ForwarderWindow(Adw.ApplicationWindow):
         self.single_item.title = self.game_name_row.get_text().strip()
         Thread(target=self._do_fetch_item_art_with_prompt, args=(self.single_item, "logo"), daemon=True).start()
     
-    def _on_template_changed(self, combo, param):
-        idx = combo.get_selected()
-        if idx < len(self.template_keys):
-            self.current_template_key = self.template_keys[idx]
-            self.template_dir = self._get_template_path(self.current_template_key)
-            combo.set_subtitle(TEMPLATES[self.current_template_key]['description'])
-            self._refresh_single_shell_row()
-            self._warn_template_issues(self.current_template_key, self.template_dir, "Single tab")
+    def _on_template_button_toggled(self, button: Gtk.ToggleButton, template_key: str) -> None:
+        if self._template_toggle_updating:
+            return
+        if not button.get_active():
+            if self.current_template_key == template_key:
+                self._template_toggle_updating = True
+                button.set_active(True)
+                self._template_toggle_updating = False
+            return
+        if self.current_template_key == template_key:
+            return
+
+        self._template_toggle_updating = True
+        self.current_template_key = template_key
+        self.template_dir = self._get_template_path(self.current_template_key)
+        self.template_row.set_subtitle(TEMPLATES[self.current_template_key]["description"])
+        for key, btn in self.template_buttons.items():
+            if key != template_key:
+                btn.set_active(False)
+        self._template_toggle_updating = False
+        self._warn_template_issues(self.current_template_key, self.template_dir, "Single tab")
 
     def _update_docker_status(self):
         if self.docker_status == 'ready':
@@ -1018,57 +956,28 @@ img.save("{preview_path}")
     # BATCH MODE
     # =============================================================================
 
-    def _on_batch_template_changed(self, combo, param):
-        idx = combo.get_selected()
-        if idx < len(self.batch_template_keys):
-            self.batch_template_key = self.batch_template_keys[idx]
-            self.batch_template_dir = self._get_template_path(self.batch_template_key)
-            combo.set_subtitle(TEMPLATES[self.batch_template_key]["description"])
-            self._refresh_batch_shell_row()
-            self._warn_template_issues(self.batch_template_key, self.batch_template_dir, "Batch tab")
-            self._render_batch_items()
+    def _on_batch_template_button_toggled(self, button: Gtk.ToggleButton, template_key: str) -> None:
+        if self._batch_template_toggle_updating:
+            return
+        if not button.get_active():
+            if self.batch_template_key == template_key:
+                self._batch_template_toggle_updating = True
+                button.set_active(True)
+                self._batch_template_toggle_updating = False
+            return
+        if self.batch_template_key == template_key:
+            return
 
-    def _draw_batch_shell_preview(self, area, cr, width, height):
-        if self.batch_shell_color:
-            r, g, b = self.batch_shell_color
-            cr.set_source_rgb(r / 255, g / 255, b / 255)
-        else:
-            cr.set_source_rgb(0.2, 0.2, 0.2)
-        cr.rectangle(0, 0, width, height)
-        cr.fill()
-
-    def _set_batch_shell_color(self, rgb: tuple[int, int, int] | None):
-        self.batch_shell_color = rgb
-        if rgb:
-            r, g, b = rgb
-            self.batch_shell_color_row.set_subtitle(f"Universal VC: RGB({r}, {g}, {b})")
-        else:
-            self.batch_shell_color_row.set_subtitle("Universal VC only: tint cartridge/body (template default if unset)")
-        self.batch_shell_color_preview.queue_draw()
-
-    def on_pick_batch_shell_color(self, button):
-        def run_color_picker():
-            cmd = ["zenity", "--color-selection", "--title", "Select Cartridge Shell Color"]
-            if self.batch_shell_color:
-                r, g, b = self.batch_shell_color
-                cmd.extend(["--color", f"rgb({r},{g},{b})"])
-            try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-                if result.returncode == 0 and result.stdout.strip():
-                    color_str = result.stdout.strip()
-                    if color_str.startswith("rgb("):
-                        parts = color_str[4:-1].split(",")
-                        r, g, b = int(parts[0]), int(parts[1]), int(parts[2])
-                    elif color_str.startswith("#"):
-                        r = int(color_str[1:3], 16)
-                        g = int(color_str[3:5], 16)
-                        b = int(color_str[5:7], 16)
-                    else:
-                        return
-                    GLib.idle_add(lambda: self._set_batch_shell_color((r, g, b)))
-            except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
-                pass
-        Thread(target=run_color_picker, daemon=True).start()
+        self._batch_template_toggle_updating = True
+        self.batch_template_key = template_key
+        self.batch_template_dir = self._get_template_path(self.batch_template_key)
+        self.batch_template_row.set_subtitle(TEMPLATES[self.batch_template_key]["description"])
+        for key, btn in self.batch_template_buttons.items():
+            if key != template_key:
+                btn.set_active(False)
+        self._batch_template_toggle_updating = False
+        self._warn_template_issues(self.batch_template_key, self.batch_template_dir, "Batch tab")
+        self._render_batch_items()
 
     def _on_batch_filter_toggle(self, switch, param):
         self.batch_show_only_problems = bool(switch.get_active())
@@ -1237,7 +1146,6 @@ img.save("{preview_path}")
         output_dir: Path,
         default_icon: Path | None = None,
         default_label: Path | None = None,
-        shell_color: tuple[int, int, int] | None = None,
         progress_cb=None,
         status_cb=None,
     ) -> tuple[bool, Path | None, str | None]:
@@ -1285,10 +1193,6 @@ img.save("{preview_path}")
                 label_path = str(default_label)
             if label_path:
                 cmd.extend(["--cartridge", label_path])
-
-            if template_key == "universal_vc" and shell_color:
-                r, g, b = shell_color
-                cmd.extend(["--shell-color", f"{r},{g},{b}"])
 
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0 or not banner_out.exists():
@@ -2132,7 +2036,6 @@ img.save("{preview_path}")
 
     def _do_build_batch_all(self):
         try:
-            shell_color = self.batch_shell_color if self.batch_template_key == "universal_vc" else None
             print(f"[batch] build start: {len(self.batch_items)} items, template={self.batch_template_key}", flush=True)
 
             total = max(1, len(self.batch_items))
@@ -2144,7 +2047,6 @@ img.save("{preview_path}")
                     template_key=self.batch_template_key,
                     template_dir=self.batch_template_dir,
                     output_dir=self.output_path,
-                    shell_color=shell_color,
                 )
 
                 if not success:
@@ -2169,52 +2071,6 @@ img.save("{preview_path}")
         finally:
             GLib.idle_add(self._render_batch_items)
 
-    def _draw_shell_color_preview(self, area, cr, width, height):
-        """Draw the shell tint preview box."""
-        if self.shell_color:
-            r, g, b = self.shell_color
-            cr.set_source_rgb(r / 255, g / 255, b / 255)
-        else:
-            cr.set_source_rgb(0.2, 0.2, 0.2)
-        cr.rectangle(0, 0, width, height)
-        cr.fill()
-
-    def _clear_shell_color(self, button):
-        """Clear the cartridge shell tint (reset to template default)."""
-        self.shell_color = None
-        self.shell_color_row.set_subtitle("Tint cartridge/body (template default if unset)")
-        self.shell_color_preview_box.queue_draw()
-
-    def on_pick_shell_color(self, button):
-        """Open color picker for Universal VC cartridge shell tint."""
-        def run_color_picker():
-            cmd = ['zenity', '--color-selection', '--title', 'Select Cartridge Shell Color']
-            if self.shell_color:
-                r, g, b = self.shell_color
-                cmd.extend(['--color', f'rgb({r},{g},{b})'])
-            try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-                if result.returncode == 0 and result.stdout.strip():
-                    color_str = result.stdout.strip()
-                    if color_str.startswith('rgb('):
-                        parts = color_str[4:-1].split(',')
-                        r, g, b = int(parts[0]), int(parts[1]), int(parts[2])
-                    elif color_str.startswith('#'):
-                        r = int(color_str[1:3], 16)
-                        g = int(color_str[3:5], 16)
-                        b = int(color_str[5:7], 16)
-                    else:
-                        return
-                    GLib.idle_add(self._set_shell_color, r, g, b)
-            except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
-                pass
-        Thread(target=run_color_picker, daemon=True).start()
-
-    def _set_shell_color(self, r, g, b):
-        """Set the Universal VC cartridge shell tint."""
-        self.shell_color = (r, g, b)
-        self.shell_color_row.set_subtitle(f"RGB({r}, {g}, {b})")
-        self.shell_color_preview_box.queue_draw()
 
     def set_status(self, message, error=False):
         def update():
@@ -2311,7 +2167,6 @@ img.save("{preview_path}")
 
             icon_path = self.icon_path if self.icon_path and self.icon_path.exists() else None
             label_path = self.cartridge_path if self.cartridge_path and self.cartridge_path.exists() else None
-            shell_color = self.shell_color if self.current_template_key == "universal_vc" else None
 
             success, output_file, error = self._build_forwarder_item(
                 item,
@@ -2320,7 +2175,6 @@ img.save("{preview_path}")
                 output_dir=self.output_path,
                 default_icon=icon_path,
                 default_label=label_path,
-                shell_color=shell_color,
                 progress_cb=self.set_progress,
                 status_cb=self.set_status,
             )
