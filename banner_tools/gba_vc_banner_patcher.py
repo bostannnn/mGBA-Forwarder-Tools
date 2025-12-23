@@ -536,11 +536,11 @@ class GBAVCBannerPatcher:
         bundled_font = os.path.join(self.template_dir, 'SCE-PS3-RD-R-LATIN.TTF')
         if os.path.exists(bundled_font):
             try:
-                font_title = ImageFont.truetype(bundled_font, 16)
+                font_title = ImageFont.truetype(bundled_font, 14)
                 font_subtitle = ImageFont.truetype(bundled_font, 12)
             except:
                 pass
-        
+
         if font_title is None:
             fallback_fonts = [
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -548,7 +548,7 @@ class GBAVCBannerPatcher:
             ]
             for fp in fallback_fonts:
                 try:
-                    font_title = ImageFont.truetype(fp, 16)
+                    font_title = ImageFont.truetype(fp, 14)
                     font_subtitle = ImageFont.truetype(fp, 12)
                     break
                 except:
@@ -565,22 +565,26 @@ class GBAVCBannerPatcher:
             x = box_center - text_width // 2
             draw.text((x, y), text, fill=color, font=font)
         
-        # Helper to wrap text
+        # Helper to wrap text (supports | for manual line breaks)
         def wrap_text(text, font, max_w):
-            words = text.split()
             lines = []
-            current_line = []
-            for word in words:
-                test_line = ' '.join(current_line + [word])
-                bbox = draw.textbbox((0, 0), test_line, font=font)
-                if bbox[2] - bbox[0] <= max_w:
-                    current_line.append(word)
-                else:
-                    if current_line:
-                        lines.append(' '.join(current_line))
-                    current_line = [word]
-            if current_line:
-                lines.append(' '.join(current_line))
+            for segment in text.split("|"):
+                segment = segment.strip()
+                if not segment:
+                    continue
+                words = segment.split()
+                current_line = []
+                for word in words:
+                    test_line = ' '.join(current_line + [word])
+                    bbox = draw.textbbox((0, 0), test_line, font=font)
+                    if bbox[2] - bbox[0] <= max_w:
+                        current_line.append(word)
+                    else:
+                        if current_line:
+                            lines.append(' '.join(current_line))
+                        current_line = [word]
+                if current_line:
+                    lines.append(' '.join(current_line))
             return lines
         
         text_color = (32, 32, 32, 255)
@@ -588,30 +592,35 @@ class GBAVCBannerPatcher:
         
         # Wrap title if needed
         title_lines = wrap_text(title, font_title, max_width)
-        
-        # Drop subtitle if title wraps to 2+ lines
-        if len(title_lines) >= 2:
+
+        # Drop subtitle if title wraps to 3+ lines
+        if len(title_lines) >= 3:
             subtitle = None
-        
+
         if len(title_lines) == 1:
             # Short title: vertically center title + subtitle
             if subtitle:
-                draw_centered(title_lines[0], 14, font_title, text_color)
+                draw_centered(title_lines[0], 16, font_title, text_color)
                 draw_centered(subtitle, 36, font_subtitle, subtitle_color)
             else:
-                draw_centered(title_lines[0], 22, font_title, text_color)
-        
+                draw_centered(title_lines[0], 24, font_title, text_color)
+
         elif len(title_lines) == 2:
-            # Two-line title: center both lines vertically (no subtitle)
-            draw_centered(title_lines[0], 12, font_title, text_color)
-            draw_centered(title_lines[1], 32, font_title, text_color)
-        
+            # Two-line title
+            if subtitle:
+                draw_centered(title_lines[0], 10, font_title, text_color)
+                draw_centered(title_lines[1], 26, font_title, text_color)
+                draw_centered(subtitle, 44, font_subtitle, subtitle_color)
+            else:
+                draw_centered(title_lines[0], 16, font_title, text_color)
+                draw_centered(title_lines[1], 34, font_title, text_color)
+
         else:
-            # Three+ lines: stack them
-            y = 5
+            # Three+ lines: stack them (no subtitle)
+            y = 10
             for line in title_lines[:3]:
                 draw_centered(line, y, font_title, text_color)
-                y += 18
+                y += 17
         
         if save_path:
             footer.save(save_path)
@@ -662,37 +671,46 @@ class GBAVCBannerPatcher:
             if not os.path.exists(font_path):
                 font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-            lines = self._wrap_text_magick(title, font_path, 16, 148)
-            if len(lines) >= 2:
+            lines = self._wrap_text_magick(title, font_path, 14, 148)
+            if len(lines) >= 3:
                 subtitle = ""
 
             annotate = ["magick", str(base_path)]
             if len(lines) == 1:
                 if subtitle:
-                    x = self._center_text_x(lines[0], font_path, 16, 172)
-                    annotate += ["-font", font_path, "-pointsize", "16", "-fill", "rgb(32,32,32)",
-                                 "-gravity", "northwest", "-annotate", f"+{x}+14", lines[0]]
+                    x = self._center_text_x(lines[0], font_path, 14, 172)
+                    annotate += ["-font", font_path, "-pointsize", "14", "-fill", "rgb(32,32,32)",
+                                 "-gravity", "northwest", "-annotate", f"+{x}+16", lines[0]]
                     sx = self._center_text_x(subtitle, font_path, 12, 172)
                     annotate += ["-font", font_path, "-pointsize", "12", "-fill", "rgb(40,40,40)",
                                  "-annotate", f"+{sx}+36", subtitle]
                 else:
-                    x = self._center_text_x(lines[0], font_path, 16, 172)
-                    annotate += ["-font", font_path, "-pointsize", "16", "-fill", "rgb(32,32,32)",
-                                 "-gravity", "northwest", "-annotate", f"+{x}+22", lines[0]]
+                    x = self._center_text_x(lines[0], font_path, 14, 172)
+                    annotate += ["-font", font_path, "-pointsize", "14", "-fill", "rgb(32,32,32)",
+                                 "-gravity", "northwest", "-annotate", f"+{x}+24", lines[0]]
             elif len(lines) == 2:
-                x1 = self._center_text_x(lines[0], font_path, 16, 172)
-                x2 = self._center_text_x(lines[1], font_path, 16, 172)
-                annotate += ["-font", font_path, "-pointsize", "16", "-fill", "rgb(32,32,32)",
-                             "-gravity", "northwest",
-                             "-annotate", f"+{x1}+12", lines[0],
-                             "-annotate", f"+{x2}+32", lines[1]]
+                x1 = self._center_text_x(lines[0], font_path, 14, 172)
+                x2 = self._center_text_x(lines[1], font_path, 14, 172)
+                if subtitle:
+                    sx = self._center_text_x(subtitle, font_path, 12, 172)
+                    annotate += ["-font", font_path, "-pointsize", "14", "-fill", "rgb(32,32,32)",
+                                 "-gravity", "northwest",
+                                 "-annotate", f"+{x1}+10", lines[0],
+                                 "-annotate", f"+{x2}+26", lines[1]]
+                    annotate += ["-font", font_path, "-pointsize", "12", "-fill", "rgb(40,40,40)",
+                                 "-annotate", f"+{sx}+44", subtitle]
+                else:
+                    annotate += ["-font", font_path, "-pointsize", "14", "-fill", "rgb(32,32,32)",
+                                 "-gravity", "northwest",
+                                 "-annotate", f"+{x1}+16", lines[0],
+                                 "-annotate", f"+{x2}+34", lines[1]]
             else:
-                y = 5
+                y = 10
                 for line in lines[:3]:
-                    x = self._center_text_x(line, font_path, 16, 172)
-                    annotate += ["-font", font_path, "-pointsize", "16", "-fill", "rgb(32,32,32)",
+                    x = self._center_text_x(line, font_path, 14, 172)
+                    annotate += ["-font", font_path, "-pointsize", "14", "-fill", "rgb(32,32,32)",
                                  "-gravity", "northwest", "-annotate", f"+{x}+{y}", line]
-                    y += 18
+                    y += 17
 
             annotate.append(save_path)
             subprocess.run(annotate, check=True, capture_output=True)
@@ -749,19 +767,24 @@ class GBAVCBannerPatcher:
         return max(0, center_x - w // 2)
 
     def _wrap_text_magick(self, text, font_path, size, max_w):
-        words = text.split()
+        # Support manual line breaks with | character
         lines = []
-        current = []
-        for word in words:
-            test_line = " ".join(current + [word])
-            if self._measure_text_width(test_line, font_path, size) <= max_w:
-                current.append(word)
-            else:
-                if current:
-                    lines.append(" ".join(current))
-                current = [word]
-        if current:
-            lines.append(" ".join(current))
+        for segment in text.split("|"):
+            segment = segment.strip()
+            if not segment:
+                continue
+            words = segment.split()
+            current = []
+            for word in words:
+                test_line = " ".join(current + [word])
+                if self._measure_text_width(test_line, font_path, size) <= max_w:
+                    current.append(word)
+                else:
+                    if current:
+                        lines.append(" ".join(current))
+                    current = [word]
+            if current:
+                lines.append(" ".join(current))
         return lines
     
     def _decode_la8_texture(self, data, offset, width, height):

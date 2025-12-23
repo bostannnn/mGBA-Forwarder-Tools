@@ -377,7 +377,7 @@ class UniversalVCBannerPatcher:
         bundled_font = self.template_dir.parent / "nsui_template" / "SCE-PS3-RD-R-LATIN.TTF"
         if bundled_font.exists():
             try:
-                font_title = ImageFont.truetype(str(bundled_font), 16)
+                font_title = ImageFont.truetype(str(bundled_font), 14)
                 font_subtitle = ImageFont.truetype(str(bundled_font), 12)
             except Exception:
                 font_title = None
@@ -389,7 +389,7 @@ class UniversalVCBannerPatcher:
             ]
             for fp in fallback_fonts:
                 try:
-                    font_title = ImageFont.truetype(fp, 16)
+                    font_title = ImageFont.truetype(fp, 14)
                     font_subtitle = ImageFont.truetype(fp, 12)
                     break
                 except Exception:
@@ -406,43 +406,53 @@ class UniversalVCBannerPatcher:
             draw.text((x, y), text, fill=color, font=font)
 
         def wrap_text(text: str, font, max_w: int):
-            words = text.split()
+            # Support manual line breaks with | character
             lines: list[str] = []
-            current: list[str] = []
-            for word in words:
-                test_line = " ".join(current + [word])
-                bbox = draw.textbbox((0, 0), test_line, font=font)
-                if bbox[2] - bbox[0] <= max_w:
-                    current.append(word)
-                else:
-                    if current:
-                        lines.append(" ".join(current))
-                    current = [word]
-            if current:
-                lines.append(" ".join(current))
+            for segment in text.split("|"):
+                segment = segment.strip()
+                if not segment:
+                    continue
+                words = segment.split()
+                current: list[str] = []
+                for word in words:
+                    test_line = " ".join(current + [word])
+                    bbox = draw.textbbox((0, 0), test_line, font=font)
+                    if bbox[2] - bbox[0] <= max_w:
+                        current.append(word)
+                    else:
+                        if current:
+                            lines.append(" ".join(current))
+                        current = [word]
+                if current:
+                    lines.append(" ".join(current))
             return lines
 
         text_color = (32, 32, 32, 255)
         subtitle_color = (40, 40, 40, 255)
 
         title_lines = wrap_text(title, font_title, max_width)
-        if len(title_lines) >= 2:
+        if len(title_lines) >= 3:
             subtitle = None
 
         if len(title_lines) == 1:
             if subtitle:
-                draw_centered(title_lines[0], 14, font_title, text_color)
+                draw_centered(title_lines[0], 16, font_title, text_color)
                 draw_centered(subtitle, 36, font_subtitle, subtitle_color)
             else:
-                draw_centered(title_lines[0], 22, font_title, text_color)
+                draw_centered(title_lines[0], 24, font_title, text_color)
         elif len(title_lines) == 2:
-            draw_centered(title_lines[0], 12, font_title, text_color)
-            draw_centered(title_lines[1], 32, font_title, text_color)
+            if subtitle:
+                draw_centered(title_lines[0], 10, font_title, text_color)
+                draw_centered(title_lines[1], 26, font_title, text_color)
+                draw_centered(subtitle, 44, font_subtitle, subtitle_color)
+            else:
+                draw_centered(title_lines[0], 16, font_title, text_color)
+                draw_centered(title_lines[1], 34, font_title, text_color)
         else:
-            y = 5
+            y = 10
             for line in title_lines[:3]:
                 draw_centered(line, y, font_title, text_color)
-                y += 18
+                y += 17
 
         return footer
 

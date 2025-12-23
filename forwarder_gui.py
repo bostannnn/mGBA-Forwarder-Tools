@@ -1171,37 +1171,48 @@ class ForwarderWindow(Adw.ApplicationWindow):
 
             title = (title or "").strip()
             subtitle = (subtitle or "").strip()
-            lines = self._wrap_text_magick(title, str(font_path), 16, 148)
-            if len(lines) >= 2:
+            lines = self._wrap_text_magick(title, str(font_path), 14, 148)
+            if len(lines) >= 3:
                 subtitle = ""
 
             annotate = ["magick", str(base_path)]
             if len(lines) == 1:
                 if subtitle:
-                    x = self._center_text_x_magick(lines[0], str(font_path), 16, 172)
-                    annotate += ["-font", str(font_path), "-pointsize", "16", "-fill", "rgb(32,32,32)",
-                                 "-gravity", "northwest", "-annotate", f"+{x}+14", lines[0]]
+                    x = self._center_text_x_magick(lines[0], str(font_path), 14, 172)
+                    annotate += ["-font", str(font_path), "-pointsize", "14", "-fill", "rgb(32,32,32)",
+                                 "-gravity", "northwest", "-annotate", f"+{x}+16", lines[0]]
                     sx = self._center_text_x_magick(subtitle, str(font_path), 12, 172)
                     annotate += ["-font", str(font_path), "-pointsize", "12", "-fill", "rgb(40,40,40)",
                                  "-annotate", f"+{sx}+36", subtitle]
                 else:
-                    x = self._center_text_x_magick(lines[0], str(font_path), 16, 172)
-                    annotate += ["-font", str(font_path), "-pointsize", "16", "-fill", "rgb(32,32,32)",
-                                 "-gravity", "northwest", "-annotate", f"+{x}+22", lines[0]]
+                    x = self._center_text_x_magick(lines[0], str(font_path), 14, 172)
+                    annotate += ["-font", str(font_path), "-pointsize", "14", "-fill", "rgb(32,32,32)",
+                                 "-gravity", "northwest", "-annotate", f"+{x}+24", lines[0]]
             elif len(lines) == 2:
-                x1 = self._center_text_x_magick(lines[0], str(font_path), 16, 172)
-                x2 = self._center_text_x_magick(lines[1], str(font_path), 16, 172)
-                annotate += ["-font", str(font_path), "-pointsize", "16", "-fill", "rgb(32,32,32)",
-                             "-gravity", "northwest",
-                             "-annotate", f"+{x1}+12", lines[0],
-                             "-annotate", f"+{x2}+32", lines[1]]
+                if subtitle:
+                    x1 = self._center_text_x_magick(lines[0], str(font_path), 14, 172)
+                    x2 = self._center_text_x_magick(lines[1], str(font_path), 14, 172)
+                    sx = self._center_text_x_magick(subtitle, str(font_path), 12, 172)
+                    annotate += ["-font", str(font_path), "-pointsize", "14", "-fill", "rgb(32,32,32)",
+                                 "-gravity", "northwest",
+                                 "-annotate", f"+{x1}+10", lines[0],
+                                 "-annotate", f"+{x2}+26", lines[1]]
+                    annotate += ["-font", str(font_path), "-pointsize", "12", "-fill", "rgb(40,40,40)",
+                                 "-annotate", f"+{sx}+44", subtitle]
+                else:
+                    x1 = self._center_text_x_magick(lines[0], str(font_path), 14, 172)
+                    x2 = self._center_text_x_magick(lines[1], str(font_path), 14, 172)
+                    annotate += ["-font", str(font_path), "-pointsize", "14", "-fill", "rgb(32,32,32)",
+                                 "-gravity", "northwest",
+                                 "-annotate", f"+{x1}+16", lines[0],
+                                 "-annotate", f"+{x2}+34", lines[1]]
             else:
-                y = 5
+                y = 10
                 for line in lines[:3]:
-                    x = self._center_text_x_magick(line, str(font_path), 16, 172)
-                    annotate += ["-font", str(font_path), "-pointsize", "16", "-fill", "rgb(32,32,32)",
+                    x = self._center_text_x_magick(line, str(font_path), 14, 172)
+                    annotate += ["-font", str(font_path), "-pointsize", "14", "-fill", "rgb(32,32,32)",
                                  "-gravity", "northwest", "-annotate", f"+{x}+{y}", line]
-                    y += 18
+                    y += 17
 
             annotate.append(str(out_path))
             subprocess.run(annotate, check=True, capture_output=True)
@@ -1269,19 +1280,24 @@ class ForwarderWindow(Adw.ApplicationWindow):
         return max(0, center_x - w // 2)
 
     def _wrap_text_magick(self, text: str, font_path: str, size: int, max_w: int) -> list[str]:
-        words = text.split()
+        # Support manual line breaks with | character
         lines: list[str] = []
-        current: list[str] = []
-        for word in words:
-            test_line = " ".join(current + [word])
-            if self._measure_text_width_magick(test_line, font_path, size) <= max_w:
-                current.append(word)
-            else:
-                if current:
-                    lines.append(" ".join(current))
-                current = [word]
-        if current:
-            lines.append(" ".join(current))
+        for segment in text.split("|"):
+            segment = segment.strip()
+            if not segment:
+                continue
+            words = segment.split()
+            current: list[str] = []
+            for word in words:
+                test_line = " ".join(current + [word])
+                if self._measure_text_width_magick(test_line, font_path, size) <= max_w:
+                    current.append(word)
+                else:
+                    if current:
+                        lines.append(" ".join(current))
+                    current = [word]
+            if current:
+                lines.append(" ".join(current))
         return lines
 
     def _build_forwarder_item(
