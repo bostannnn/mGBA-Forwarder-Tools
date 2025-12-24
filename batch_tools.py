@@ -25,9 +25,10 @@ def title_from_rom_filename(filename: str) -> tuple[str, float]:
     Parse a reasonable game title from a ROM filename.
 
     Returns (title, confidence) where confidence is 0..1.
+    Works for both .gba and .nds files.
     """
     base = filename.rsplit("/", 1)[-1]
-    base = re.sub(r"\.gba$", "", base, flags=re.IGNORECASE)
+    base = re.sub(r"\.(gba|nds)$", "", base, flags=re.IGNORECASE)
 
     # Common separators
     candidate = base.replace("_", " ").replace(".", " ").replace("-", " ")
@@ -51,6 +52,16 @@ def title_from_rom_filename(filename: str) -> tuple[str, float]:
     return stripped, confidence
 
 
+def get_rom_type(rom_path: str) -> str:
+    """Detect ROM type from file extension."""
+    lower = rom_path.lower()
+    if lower.endswith(".gba"):
+        return "gba"
+    elif lower.endswith(".nds"):
+        return "nds"
+    return "unknown"
+
+
 @dataclass
 class BatchItem:
     rom_path: str
@@ -58,6 +69,7 @@ class BatchItem:
     title: str
     confidence: float
     year: str = ""
+    subtitle: str = ""  # For NDS: displayed as "Released: {year}" or custom text
     sgdb_game_id: int | None = None
     icon_url: str | None = None
     logo_url: str | None = None
@@ -67,10 +79,17 @@ class BatchItem:
     build_status: str = "pending"  # pending, building, success, failed
 
     @property
+    def rom_type(self) -> str:
+        return get_rom_type(self.rom_path)
+
+    @property
     def needs_user_input(self) -> bool:
         return self.confidence < 0.5 or not self.title
 
     @property
     def needs_assets(self) -> bool:
+        # GBA needs both icon and label; NDS only needs label (icon from ROM)
+        if self.rom_type == "nds":
+            return not self.label_file
         return not (self.icon_file and self.label_file)
 

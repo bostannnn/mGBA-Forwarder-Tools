@@ -23,7 +23,7 @@ from threading import Thread, Event
 
 CLAMP_MAX_WIDTH = 820
 
-from batch_tools import BatchItem, title_from_rom_filename
+from batch_tools import BatchItem, title_from_rom_filename, get_rom_type
 
 
 # =============================================================================
@@ -119,10 +119,14 @@ class ForwarderWindow(Adw.ApplicationWindow):
         # Output path
         self.output_path = Path.home() / "3ds-forwarders"
 
-        # ROM list (unified - replaces separate single/batch modes)
-        self.batch_items: list[BatchItem] = []
-        self.batch_show_only_problems: bool = False
-        self._batch_expanded_keys: set[str] = set()
+        # ROM lists (separate for GBA and NDS)
+        self.gba_batch_items: list[BatchItem] = []
+        self.nds_batch_items: list[BatchItem] = []
+        self.gba_show_only_problems: bool = False
+        self.nds_show_only_problems: bool = False
+        self._gba_expanded_keys: set[str] = set()
+        self._nds_expanded_keys: set[str] = set()
+        self.nds_batch_fit_mode: str = "fit"  # Default fit mode for NDS ROMs
 
         # SteamGridDB
         self.sgdb_api_key: str = ""
@@ -214,29 +218,53 @@ class ForwarderWindow(Adw.ApplicationWindow):
         switcher.set_property("stack", self.view_stack)
         header.set_title_widget(switcher)
 
-        # --- Main tab (unified ROM handling) ---
-        main_scrolled = Gtk.ScrolledWindow()
-        main_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        main_scrolled.set_vexpand(True)
+        # --- GBA ROMs tab ---
+        gba_scrolled = Gtk.ScrolledWindow()
+        gba_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        gba_scrolled.set_vexpand(True)
 
-        main_clamp = Adw.Clamp()
-        main_clamp.set_maximum_size(CLAMP_MAX_WIDTH)
-        main_clamp.set_tightening_threshold(CLAMP_MAX_WIDTH)
-        main_clamp.set_hexpand(True)
-        main_scrolled.set_child(main_clamp)
+        gba_clamp = Adw.Clamp()
+        gba_clamp.set_maximum_size(CLAMP_MAX_WIDTH)
+        gba_clamp.set_tightening_threshold(CLAMP_MAX_WIDTH)
+        gba_clamp.set_hexpand(True)
+        gba_scrolled.set_child(gba_clamp)
 
-        main_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        main_content.set_margin_top(12)
-        main_content.set_margin_bottom(12)
-        main_content.set_margin_start(12)
-        main_content.set_margin_end(12)
-        main_clamp.set_child(main_content)
+        gba_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        gba_content.set_margin_top(12)
+        gba_content.set_margin_bottom(12)
+        gba_content.set_margin_start(12)
+        gba_content.set_margin_end(12)
+        gba_clamp.set_child(gba_content)
 
-        self._build_main_tab(main_content)
-        self.view_stack.add_titled(main_scrolled, "main", "ROMs")
+        self._build_gba_tab(gba_content)
+        self.view_stack.add_titled(gba_scrolled, "gba", "GBA ROMs")
 
-        # Setup drag & drop for ROM files
-        self._setup_drag_drop(main_scrolled)
+        # Setup drag & drop for GBA ROM files
+        self._setup_drag_drop(gba_scrolled, "gba")
+
+        # --- NDS ROMs tab ---
+        nds_scrolled = Gtk.ScrolledWindow()
+        nds_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        nds_scrolled.set_vexpand(True)
+
+        nds_clamp = Adw.Clamp()
+        nds_clamp.set_maximum_size(CLAMP_MAX_WIDTH)
+        nds_clamp.set_tightening_threshold(CLAMP_MAX_WIDTH)
+        nds_clamp.set_hexpand(True)
+        nds_scrolled.set_child(nds_clamp)
+
+        nds_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        nds_content.set_margin_top(12)
+        nds_content.set_margin_bottom(12)
+        nds_content.set_margin_start(12)
+        nds_content.set_margin_end(12)
+        nds_clamp.set_child(nds_content)
+
+        self._build_nds_tab(nds_content)
+        self.view_stack.add_titled(nds_scrolled, "nds", "NDS ROMs")
+
+        # Setup drag & drop for NDS ROM files
+        self._setup_drag_drop(nds_scrolled, "nds")
 
         # --- Settings tab ---
         settings_scrolled = Gtk.ScrolledWindow()
@@ -275,31 +303,35 @@ class ForwarderWindow(Adw.ApplicationWindow):
         self.status_label.add_css_class("dim-label")
         footer.append(self.status_label)
 
-    def _setup_drag_drop(self, widget):
+    def _setup_drag_drop(self, widget, rom_type: str = "gba"):
         """Setup drag & drop support for ROM files."""
         drop_target = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
-        drop_target.connect("drop", self._on_drop)
-        drop_target.connect("enter", self._on_drag_enter)
+        drop_target.connect("drop", self._on_drop, rom_type)
+        drop_target.connect("enter", self._on_drag_enter, rom_type)
         drop_target.connect("leave", self._on_drag_leave)
         widget.add_controller(drop_target)
 
-    def _on_drag_enter(self, drop_target, x, y):
+    def _on_drag_enter(self, drop_target, x, y, rom_type: str = "gba"):
         """Handle drag enter event."""
-        self.set_status("Drop ROM files here...")
+        ext = ".gba" if rom_type == "gba" else ".nds"
+        self.set_status(f"Drop {ext.upper()} ROM files here...")
         return Gdk.DragAction.COPY
 
     def _on_drag_leave(self, drop_target):
         """Handle drag leave event."""
         self.set_status("Ready")
 
-    def _on_drop(self, drop_target, value, x, y):
+    def _on_drop(self, drop_target, value, x, y, rom_type: str = "gba"):
         """Handle file drop."""
         if not isinstance(value, Gdk.FileList):
             return False
 
         files = value.get_files()
         added = 0
-        existing = {it.rom_path for it in self.batch_items}
+        ext = ".gba" if rom_type == "gba" else ".nds"
+        batch_items = self.gba_batch_items if rom_type == "gba" else self.nds_batch_items
+        existing = {it.rom_path for it in batch_items}
+        fit_mode = self.gba_batch_fit_mode if rom_type == "gba" else self.nds_batch_fit_mode
 
         for gfile in files:
             path = gfile.get_path()
@@ -308,43 +340,46 @@ class ForwarderWindow(Adw.ApplicationWindow):
 
             p = Path(path)
 
-            # Handle directories - scan for .gba files
+            # Handle directories - scan for ROM files
             if p.is_dir():
-                for rom in p.rglob("*.gba"):
+                for rom in p.rglob(f"*{ext}"):
                     if str(rom) in existing:
                         continue
                     title, confidence = title_from_rom_filename(rom.name)
-                    sd_path = f"/roms/gba/{rom.name}"
-                    self.batch_items.append(BatchItem(
+                    sd_path = f"/roms/{rom_type}/{rom.name}"
+                    batch_items.append(BatchItem(
                         rom_path=str(rom),
                         sd_path=sd_path,
                         title=title,
                         confidence=confidence,
-                        fit_mode=self.batch_fit_mode,
+                        fit_mode=fit_mode,
                     ))
                     existing.add(str(rom))
                     added += 1
-            # Handle individual .gba files
-            elif p.suffix.lower() == ".gba":
+            # Handle individual ROM files
+            elif p.suffix.lower() == ext:
                 if str(p) in existing:
                     continue
                 title, confidence = title_from_rom_filename(p.name)
-                sd_path = f"/roms/gba/{p.name}"
-                self.batch_items.append(BatchItem(
+                sd_path = f"/roms/{rom_type}/{p.name}"
+                batch_items.append(BatchItem(
                     rom_path=str(p),
                     sd_path=sd_path,
                     title=title,
                     confidence=confidence,
-                    fit_mode=self.batch_fit_mode,
+                    fit_mode=fit_mode,
                 ))
                 existing.add(str(p))
                 added += 1
 
         if added > 0:
-            self._render_batch_items()
-            self.set_status(f"Added {added} ROM(s) via drag & drop")
+            if rom_type == "gba":
+                self._render_gba_batch_items()
+            else:
+                self._render_nds_batch_items()
+            self.set_status(f"Added {added} {rom_type.upper()} ROM(s) via drag & drop")
         else:
-            self.set_status("No new GBA ROMs found in dropped files")
+            self.set_status(f"No new {rom_type.upper()} ROMs found in dropped files")
 
         return True
 
@@ -401,8 +436,8 @@ class ForwarderWindow(Adw.ApplicationWindow):
         )
         self._update_docker_status()
 
-    def _build_main_tab(self, content: Gtk.Box) -> None:
-        """Build unified ROM handling tab (replaces single and batch tabs)."""
+    def _build_gba_tab(self, content: Gtk.Box) -> None:
+        """Build GBA ROM handling tab."""
         # --- ROM Selection Group ---
         rom_group = Adw.PreferencesGroup()
         content.append(rom_group)
@@ -413,14 +448,14 @@ class ForwarderWindow(Adw.ApplicationWindow):
         rom_buttons.set_valign(Gtk.Align.CENTER)
 
         add_rom_btn = Gtk.Button(label="Add ROM", valign=Gtk.Align.CENTER)
-        add_rom_btn.connect("clicked", self.on_add_rom)
+        add_rom_btn.connect("clicked", self.on_add_gba_rom)
 
         add_folder_btn = Gtk.Button(label="Add Folder", valign=Gtk.Align.CENTER)
-        add_folder_btn.connect("clicked", self.on_add_folder)
+        add_folder_btn.connect("clicked", self.on_add_gba_folder)
 
         clear_btn = Gtk.Button(label="Clear All", valign=Gtk.Align.CENTER)
         clear_btn.add_css_class("destructive-action")
-        clear_btn.connect("clicked", self.on_clear_all_roms)
+        clear_btn.connect("clicked", self.on_clear_all_gba_roms)
 
         rom_buttons.append(add_rom_btn)
         rom_buttons.append(add_folder_btn)
@@ -463,18 +498,15 @@ class ForwarderWindow(Adw.ApplicationWindow):
         fit_mode_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         fit_mode_box.set_valign(Gtk.Align.CENTER)
 
-        self.batch_fit_mode = "fit"  # Default fit mode for new ROMs
+        self.gba_batch_fit_mode = "fit"  # Default fit mode for new GBA ROMs
 
-        def _on_batch_fit_toggled(btn, mode):
+        def _on_gba_fit_toggled(btn, mode):
             if not btn.get_active():
                 return
-            self.batch_fit_mode = mode
-            # Update all button states
-            for m, b in self.batch_fit_buttons.items():
-                if m != mode and b.get_active():
-                    b.set_active(False)
+            self.gba_batch_fit_mode = mode
 
-        self.batch_fit_buttons = {}
+        self.gba_fit_buttons = {}
+        first_btn = None
         for mode, label, tooltip in [
             ("fit", "Fit", "Scale to fit, center (entire image visible)"),
             ("fill", "Fill", "Scale to cover, crop edges if needed"),
@@ -482,15 +514,19 @@ class ForwarderWindow(Adw.ApplicationWindow):
         ]:
             btn = Gtk.ToggleButton(label=label)
             btn.set_tooltip_text(tooltip)
-            btn.connect("toggled", _on_batch_fit_toggled, mode)
-            self.batch_fit_buttons[mode] = btn
+            if first_btn is None:
+                first_btn = btn
+            else:
+                btn.set_group(first_btn)
+            btn.connect("toggled", _on_gba_fit_toggled, mode)
+            self.gba_fit_buttons[mode] = btn
             fit_mode_box.append(btn)
 
-        self.batch_fit_buttons["fit"].set_active(True)
+        self.gba_fit_buttons["fit"].set_active(True)
 
         apply_btn = Gtk.Button(label="Apply to All", valign=Gtk.Align.CENTER)
         apply_btn.set_tooltip_text("Apply this fit mode to all ROMs in the list")
-        apply_btn.connect("clicked", self._on_apply_fit_mode_all)
+        apply_btn.connect("clicked", self._on_apply_gba_fit_mode_all)
         fit_mode_box.append(apply_btn)
 
         fit_mode_row.add_suffix(fit_mode_box)
@@ -501,68 +537,650 @@ class ForwarderWindow(Adw.ApplicationWindow):
         content.append(list_group)
 
         # Fetch progress bar
-        self.batch_fetch_progress = Gtk.ProgressBar()
-        self.batch_fetch_progress.set_visible(False)
-        self.batch_fetch_progress_row = Adw.PreferencesRow()
-        self.batch_fetch_progress_row.set_child(self.batch_fetch_progress)
-        self.batch_fetch_progress_row.set_visible(False)
-        list_group.add(self.batch_fetch_progress_row)
+        self.gba_fetch_progress = Gtk.ProgressBar()
+        self.gba_fetch_progress.set_visible(False)
+        self.gba_fetch_progress_row = Adw.PreferencesRow()
+        self.gba_fetch_progress_row.set_child(self.gba_fetch_progress)
+        self.gba_fetch_progress_row.set_visible(False)
+        list_group.add(self.gba_fetch_progress_row)
 
         # Status row
-        self.batch_status_row = Adw.ActionRow(title="Status", subtitle="No ROMs added yet")
-        list_group.add(self.batch_status_row)
+        self.gba_status_row = Adw.ActionRow(title="Status", subtitle="No ROMs added yet")
+        list_group.add(self.gba_status_row)
 
-        # Art fetch button
-        art_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        art_actions.set_halign(Gtk.Align.FILL)
-        self.batch_fetch_btn = Gtk.Button(label="Fetch Art (All)", valign=Gtk.Align.CENTER)
-        self.batch_fetch_btn.connect("clicked", self.on_fetch_batch_art)
-        self.batch_fetch_btn.set_sensitive(False)
-        art_actions.append(self.batch_fetch_btn)
-        art_actions_row = Adw.PreferencesRow()
-        art_actions_row.set_child(art_actions)
-        list_group.add(art_actions_row)
+        # Fetch Art row with description
+        fetch_row = Adw.ActionRow(
+            title="Fetch Art",
+            subtitle="Download icons and labels from SteamGridDB for all ROMs"
+        )
+        self.gba_fetch_btn = Gtk.Button(label="Fetch All", valign=Gtk.Align.CENTER)
+        self.gba_fetch_btn.connect("clicked", self.on_fetch_gba_batch_art)
+        self.gba_fetch_btn.set_sensitive(False)
+        fetch_row.add_suffix(self.gba_fetch_btn)
+        list_group.add(fetch_row)
 
         # Filter switch
         filter_row = Adw.ActionRow(
             title="Show Only Problems",
             subtitle="Hide rows that already have title and art"
         )
-        self.batch_filter_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
-        self.batch_filter_switch.set_active(self.batch_show_only_problems)
-        self.batch_filter_switch.connect("notify::active", self._on_batch_filter_toggle)
-        filter_row.add_suffix(self.batch_filter_switch)
+        self.gba_filter_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self.gba_filter_switch.set_active(self.gba_show_only_problems)
+        self.gba_filter_switch.connect("notify::active", self._on_gba_filter_toggle)
+        filter_row.add_suffix(self.gba_filter_switch)
         list_group.add(filter_row)
 
         # ROM list box
-        self.batch_listbox = Gtk.ListBox()
-        self.batch_listbox.add_css_class("boxed-list")
-        self.batch_listbox.set_hexpand(True)
-        batch_list_row = Adw.PreferencesRow()
-        batch_list_row.set_child(self.batch_listbox)
-        list_group.add(batch_list_row)
+        self.gba_listbox = Gtk.ListBox()
+        self.gba_listbox.add_css_class("boxed-list")
+        self.gba_listbox.set_hexpand(True)
+        gba_list_row = Adw.PreferencesRow()
+        gba_list_row.set_child(self.gba_listbox)
+        list_group.add(gba_list_row)
 
-        # Build button
-        build_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        build_box.set_halign(Gtk.Align.CENTER)
-        build_box.set_margin_top(12)
-        build_box.set_margin_bottom(12)
-        self.build_btn = Gtk.Button(label="Build CIA", valign=Gtk.Align.CENTER)
-        self.build_btn.add_css_class("suggested-action")
-        self.build_btn.connect("clicked", self.on_build_all)
-        self.build_btn.set_sensitive(False)
-        build_box.append(self.build_btn)
-        build_row = Adw.PreferencesRow()
-        build_row.set_child(build_box)
-        content.append(build_row)
+        # Build row with description
+        build_row = Adw.ActionRow(
+            title="Build",
+            subtitle="Generate CIA forwarder files for all ROMs (requires Docker)"
+        )
+        self.gba_build_btn = Gtk.Button(label="Build All CIAs", valign=Gtk.Align.CENTER)
+        self.gba_build_btn.add_css_class("suggested-action")
+        self.gba_build_btn.connect("clicked", self.on_build_all_gba)
+        self.gba_build_btn.set_sensitive(False)
+        build_row.add_suffix(self.gba_build_btn)
+        list_group.add(build_row)
 
-    def on_add_rom(self, button):
-        """Add a single ROM file to the list."""
+    def _build_nds_tab(self, content: Gtk.Box) -> None:
+        """Build NDS ROM handling tab."""
+        # --- ROM Selection Group ---
+        rom_group = Adw.PreferencesGroup()
+        content.append(rom_group)
+
+        # ROM selection buttons row
+        rom_buttons_row = Adw.ActionRow(title="Add ROMs", subtitle="Select individual ROMs or scan a folder")
+        rom_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        rom_buttons.set_valign(Gtk.Align.CENTER)
+
+        add_rom_btn = Gtk.Button(label="Add ROM", valign=Gtk.Align.CENTER)
+        add_rom_btn.connect("clicked", self.on_add_nds_rom)
+
+        add_folder_btn = Gtk.Button(label="Add Folder", valign=Gtk.Align.CENTER)
+        add_folder_btn.connect("clicked", self.on_add_nds_folder)
+
+        clear_btn = Gtk.Button(label="Clear All", valign=Gtk.Align.CENTER)
+        clear_btn.add_css_class("destructive-action")
+        clear_btn.connect("clicked", self.on_clear_all_nds_roms)
+
+        rom_buttons.append(add_rom_btn)
+        rom_buttons.append(add_folder_btn)
+        rom_buttons.append(clear_btn)
+        rom_buttons_row.add_suffix(rom_buttons)
+        rom_group.add(rom_buttons_row)
+
+        # Output folder (escape path for markup)
+        self.nds_output_row = Adw.ActionRow(
+            title="Output Folder",
+            subtitle=GLib.markup_escape_text(str(self.output_path))
+        )
+        output_btn = Gtk.Button(label="Browse", valign=Gtk.Align.CENTER)
+        output_btn.connect("clicked", self.on_browse_nds_output)
+        self.nds_output_row.add_suffix(output_btn)
+        rom_group.add(self.nds_output_row)
+
+        # Batch Fit Mode (apply to all ROMs)
+        fit_mode_row = Adw.ActionRow(
+            title="Default Label Fit Mode",
+            subtitle="Apply to all ROMs when building"
+        )
+        fit_mode_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        fit_mode_box.set_valign(Gtk.Align.CENTER)
+
+        def _on_nds_fit_toggled(btn, mode):
+            if not btn.get_active():
+                return
+            self.nds_batch_fit_mode = mode
+
+        self.nds_fit_buttons = {}
+        first_btn = None
+        for mode, label, tooltip in [
+            ("fit", "Fit", "Scale to fit, center (entire image visible)"),
+            ("fill", "Fill", "Scale to cover, crop edges if needed"),
+            ("stretch", "Stretch", "Stretch to exact size (may distort)"),
+        ]:
+            btn = Gtk.ToggleButton(label=label)
+            btn.set_tooltip_text(tooltip)
+            if first_btn is None:
+                first_btn = btn
+            else:
+                btn.set_group(first_btn)
+            btn.connect("toggled", _on_nds_fit_toggled, mode)
+            self.nds_fit_buttons[mode] = btn
+            fit_mode_box.append(btn)
+
+        self.nds_fit_buttons["fit"].set_active(True)
+
+        apply_btn = Gtk.Button(label="Apply to All", valign=Gtk.Align.CENTER)
+        apply_btn.set_tooltip_text("Apply this fit mode to all ROMs in the list")
+        apply_btn.connect("clicked", self._on_apply_nds_fit_mode_all)
+        fit_mode_box.append(apply_btn)
+
+        fit_mode_row.add_suffix(fit_mode_box)
+        rom_group.add(fit_mode_row)
+
+        # --- ROM List/Status Group ---
+        list_group = Adw.PreferencesGroup()
+        content.append(list_group)
+
+        # Fetch progress bar
+        self.nds_fetch_progress = Gtk.ProgressBar()
+        self.nds_fetch_progress.set_visible(False)
+        self.nds_fetch_progress_row = Adw.PreferencesRow()
+        self.nds_fetch_progress_row.set_child(self.nds_fetch_progress)
+        self.nds_fetch_progress_row.set_visible(False)
+        list_group.add(self.nds_fetch_progress_row)
+
+        # Status row
+        self.nds_status_row = Adw.ActionRow(title="Status", subtitle="No ROMs added yet")
+        list_group.add(self.nds_status_row)
+
+        # Fetch Art row with description
+        fetch_row = Adw.ActionRow(
+            title="Fetch Art",
+            subtitle="Download labels from SteamGridDB for all ROMs (icons extracted from ROM)"
+        )
+        self.nds_fetch_btn = Gtk.Button(label="Fetch All", valign=Gtk.Align.CENTER)
+        self.nds_fetch_btn.connect("clicked", self.on_fetch_nds_batch_art)
+        self.nds_fetch_btn.set_sensitive(False)
+        fetch_row.add_suffix(self.nds_fetch_btn)
+        list_group.add(fetch_row)
+
+        # Filter switch
+        filter_row = Adw.ActionRow(
+            title="Show Only Problems",
+            subtitle="Hide rows that already have title and art"
+        )
+        self.nds_filter_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self.nds_filter_switch.set_active(self.nds_show_only_problems)
+        self.nds_filter_switch.connect("notify::active", self._on_nds_filter_toggle)
+        filter_row.add_suffix(self.nds_filter_switch)
+        list_group.add(filter_row)
+
+        # ROM list box
+        self.nds_listbox = Gtk.ListBox()
+        self.nds_listbox.add_css_class("boxed-list")
+        self.nds_listbox.set_hexpand(True)
+        nds_list_row = Adw.PreferencesRow()
+        nds_list_row.set_child(self.nds_listbox)
+        list_group.add(nds_list_row)
+
+        # Build row with description
+        build_row = Adw.ActionRow(
+            title="Build",
+            subtitle="Generate CIA forwarder files for all ROMs"
+        )
+        self.nds_build_btn = Gtk.Button(label="Build All CIAs", valign=Gtk.Align.CENTER)
+        self.nds_build_btn.add_css_class("suggested-action")
+        self.nds_build_btn.connect("clicked", self.on_build_all_nds)
+        self.nds_build_btn.set_sensitive(False)
+        build_row.add_suffix(self.nds_build_btn)
+        list_group.add(build_row)
+
+    # =========================================================================
+    # NDS ROM Handlers
+    # =========================================================================
+
+    def on_add_nds_rom(self, button):
+        """Add a single NDS ROM file to the list."""
+        def on_selected(path):
+            try:
+                p = Path(path)
+                if any(it.rom_path == str(p) for it in self.nds_batch_items):
+                    self.set_status(f"ROM already added: {p.name}")
+                    return
+
+                title, confidence = title_from_rom_filename(p.name)
+                sd_path = f"/roms/nds/{p.name}"
+                item = BatchItem(
+                    rom_path=str(p),
+                    sd_path=sd_path,
+                    title=title,
+                    confidence=confidence,
+                    fit_mode=self.nds_batch_fit_mode,
+                )
+                self.nds_batch_items.append(item)
+                self._render_nds_batch_items()
+                self.set_status(f"Added: {p.name}")
+            except Exception as e:
+                self.set_status(f"Failed to add ROM: {e}", error=True)
+
+        pick_file_zenity_async("Select NDS ROM", [("NDS ROMs", ["*.nds"])], callback=on_selected)
+
+    def on_add_nds_folder(self, button):
+        """Scan a folder for NDS ROMs and add them to the list."""
+        def on_selected(path):
+            try:
+                folder = Path(path)
+                if not folder.exists() or not folder.is_dir():
+                    self.set_status("Invalid folder", error=True)
+                    return
+                self.set_status("Scanning folder...")
+                Thread(target=self._do_scan_nds_folder, args=(folder,), daemon=True).start()
+            except Exception as e:
+                self.set_status(f"Failed to scan folder: {e}", error=True)
+
+        pick_folder_zenity_async("Select NDS ROM Folder", callback=on_selected)
+
+    def _do_scan_nds_folder(self, folder: Path):
+        """Scan folder for NDS ROMs in background thread."""
+        roms = sorted(folder.rglob("*.nds"))
+        existing = {it.rom_path for it in self.nds_batch_items}
+        new_count = 0
+
+        for rom in roms:
+            if str(rom) in existing:
+                continue
+            title, confidence = title_from_rom_filename(rom.name)
+            sd_path = f"/roms/nds/{rom.name}"
+            self.nds_batch_items.append(BatchItem(
+                rom_path=str(rom),
+                sd_path=sd_path,
+                title=title,
+                confidence=confidence,
+                fit_mode=self.nds_batch_fit_mode,
+            ))
+            new_count += 1
+
+        def update():
+            self._render_nds_batch_items()
+            self.set_status(f"Added {new_count} NDS ROM(s) from folder")
+        GLib.idle_add(update)
+
+    def on_clear_all_nds_roms(self, button):
+        """Clear all NDS ROMs from the list."""
+        self.nds_batch_items.clear()
+        self._render_nds_batch_items()
+        self.set_status("Cleared all NDS ROMs")
+
+    def _on_apply_nds_fit_mode_all(self, button):
+        """Apply the current batch fit mode to all NDS ROMs."""
+        if not self.nds_batch_items:
+            self.set_status("No ROMs to update", error=True)
+            return
+        for item in self.nds_batch_items:
+            item.fit_mode = self.nds_batch_fit_mode
+        self._render_nds_batch_items()
+        self.set_status(f"Applied '{self.nds_batch_fit_mode}' fit mode to {len(self.nds_batch_items)} ROM(s)")
+
+    def _on_nds_filter_toggle(self, switch, param):
+        self.nds_show_only_problems = bool(switch.get_active())
+        self._render_nds_batch_items()
+
+    def on_browse_nds_output(self, button):
+        """Browse for NDS output folder."""
+        self.on_browse_output(button)  # Reuse the same output folder
+
+    def on_fetch_nds_batch_art(self, button):
+        """Fetch art for all NDS ROMs."""
+        if not self.nds_batch_items:
+            self.set_status("Add ROMs first", error=True)
+            return
+        if not (self.sgdb_api_key or os.environ.get("STEAMGRIDDB_API_KEY")):
+            self.set_status("Set SteamGridDB API key first", error=True)
+            return
+        self.nds_fetch_btn.set_sensitive(False)
+        self.nds_build_btn.set_sensitive(False)
+        self.nds_fetch_progress.set_fraction(0)
+        try:
+            self.nds_fetch_progress.set_visible(True)
+            self.nds_fetch_progress_row.set_visible(True)
+        except Exception:
+            pass
+        # For NDS, we only fetch labels (icon comes from ROM)
+        Thread(target=self._do_fetch_nds_batch_art, daemon=True).start()
+
+    def _do_fetch_nds_batch_art(self):
+        """Fetch art for NDS ROMs (label only, icon from ROM)."""
+        try:
+            candidates = [it for it in self.nds_batch_items if it.title and it.needs_assets]
+            if not candidates:
+                GLib.idle_add(lambda: self.set_status("No NDS ROMs need art"))
+                return
+
+            self._do_fetch_batch_art_for_items(
+                self.nds_batch_items,
+                fetch_icon=False,  # NDS icons come from ROM
+                fetch_logo=True,
+                progress_callback=self._set_nds_fetch_progress,
+            )
+        except Exception as e:
+            err_msg = str(e)
+            GLib.idle_add(lambda err=err_msg: self.set_status(f"Fetch error: {err}", error=True))
+        finally:
+            GLib.idle_add(self._finish_nds_batch_fetch)
+
+    def _set_nds_fetch_progress(self, fraction: float, title: str) -> bool:
+        self.nds_fetch_progress.set_fraction(fraction)
+        self.set_status(f"[NDS] Fetching art… {int(fraction*100)}% ({title})")
+        return False
+
+    def _finish_nds_batch_fetch(self) -> bool:
+        try:
+            self.nds_fetch_progress.set_visible(False)
+            self.nds_fetch_progress_row.set_visible(False)
+        except Exception:
+            pass
+        self._render_nds_batch_items()
+        have_key = bool(self.sgdb_api_key or os.environ.get("STEAMGRIDDB_API_KEY"))
+        missing_art = sum(1 for it in self.nds_batch_items if it.needs_assets)
+        self.nds_fetch_btn.set_sensitive(have_key and missing_art > 0)
+        self.nds_build_btn.set_sensitive(bool(self.nds_batch_items))
+        self.set_status("[NDS] Fetch complete")
+        return False
+
+    def on_build_all_nds(self, button):
+        """Build CIAs for all NDS ROMs in the list."""
+        if not self.nds_batch_items:
+            self.set_status("Add ROMs first", error=True)
+            return
+        # Check for NDS build tools
+        generator_script = self.script_dir / "generator" / "generator.py"
+        if not generator_script.exists():
+            self.set_status("NDS generator script not found", error=True)
+            return
+        self.nds_build_btn.set_sensitive(False)
+        self.nds_fetch_btn.set_sensitive(False)
+        Thread(target=self._do_build_all_nds, daemon=True).start()
+
+    def _do_build_all_nds(self):
+        """Build all NDS forwarders in background thread."""
+        import sys
+        try:
+            for item in self.nds_batch_items:
+                item.build_status = "pending"
+            GLib.idle_add(self._render_nds_batch_items)
+
+            total = max(1, len(self.nds_batch_items))
+            success_count = 0
+            fail_count = 0
+            generator_script = self.script_dir / "generator" / "generator.py"
+
+            for idx, item in enumerate(self.nds_batch_items, start=1):
+                title = item.title or Path(item.rom_path).stem
+                item.build_status = "building"
+                GLib.idle_add(self._render_nds_batch_items)
+
+                rom_name = Path(item.rom_path).stem
+                out_path = self.output_path / f"{rom_name}.cia"
+                year = (item.subtitle or item.year or "").strip()
+                subtitle = f"Released: {year}" if year else ""
+
+                args = [
+                    sys.executable,
+                    str(generator_script),
+                    item.rom_path,
+                    "--banner-style", "universal",
+                    "-o", str(out_path),
+                    "--title", title,
+                ]
+                if item.sd_path:
+                    args.extend(["-p", item.sd_path])
+                if subtitle:
+                    args.extend(["--subtitle", subtitle])
+                if item.label_file:
+                    args.extend(["-b", item.label_file])
+                    args.extend(["--fit-mode", item.fit_mode])
+
+                last_error = None
+                generator_dir = self.script_dir / "generator"
+                try:
+                    result = subprocess.run(args, capture_output=True, text=True, timeout=300, cwd=str(generator_dir))
+                    if result.returncode == 0 and out_path.exists():
+                        item.build_status = "success"
+                        success_count += 1
+                    else:
+                        item.build_status = "failed"
+                        fail_count += 1
+                        last_error = (result.stderr or result.stdout or f"Exit code {result.returncode}, output missing: {out_path}").strip()[:300]
+                except Exception as e:
+                    item.build_status = "failed"
+                    fail_count += 1
+                    last_error = str(e)
+
+                frac = idx / total
+                def _update(f=frac, t=title, i=idx, tot=total, s=success_count, fl=fail_count, err=last_error):
+                    self.set_progress(f)
+                    if err:
+                        self.set_status(f"[NDS] {i}/{tot} FAILED: {err}", error=True)
+                    else:
+                        self.set_status(f"[NDS] Building {i}/{tot}: {t} (✓{s} ✗{fl})")
+                    self._render_nds_batch_items()
+                    return False
+                GLib.idle_add(_update)
+
+            def _final(s=success_count, f=fail_count):
+                if f > 0:
+                    self.set_status(f"[NDS] Build complete: {s} succeeded, {f} failed", error=True)
+                else:
+                    self.set_status(f"[NDS] Build complete: {s} succeeded")
+                self._render_nds_batch_items()
+            GLib.idle_add(_final)
+        except Exception as e:
+            err_msg = str(e)
+            GLib.idle_add(lambda err=err_msg: self.set_status(f"Build error: {err}", error=True))
+        finally:
+            def finish():
+                self.nds_build_btn.set_sensitive(bool(self.nds_batch_items))
+                have_key = bool(self.sgdb_api_key or os.environ.get("STEAMGRIDDB_API_KEY"))
+                missing_art = sum(1 for it in self.nds_batch_items if it.needs_assets)
+                self.nds_fetch_btn.set_sensitive(have_key and missing_art > 0)
+                self.progress_bar.set_visible(False)
+            GLib.idle_add(finish)
+
+    def _update_nds_batch_summary(self) -> None:
+        """Update the NDS batch status row summary."""
+        if not self.nds_batch_items:
+            self.nds_status_row.set_subtitle("No ROMs added yet")
+        else:
+            unresolved = sum(1 for it in self.nds_batch_items if it.needs_user_input)
+            missing_art = sum(1 for it in self.nds_batch_items if it.needs_assets)
+            count = len(self.nds_batch_items)
+            self.nds_status_row.set_subtitle(
+                f"{count} ROM(s) | {unresolved} need review | {missing_art} need art"
+            )
+        have_key = bool(self.sgdb_api_key or os.environ.get("STEAMGRIDDB_API_KEY"))
+        missing_art = sum(1 for it in self.nds_batch_items if it.needs_assets)
+        self.nds_fetch_btn.set_sensitive(have_key and missing_art > 0)
+        self.nds_build_btn.set_sensitive(bool(self.nds_batch_items))
+
+    def _render_nds_batch_items(self):
+        """Rebuild the NDS batch item list UI."""
+        # Remember which rows were expanded so fetches don't collapse them.
+        prev_expanded: set[str] = set()
+        scroll_to_key = getattr(self, '_nds_scroll_to_key', None)
+        row = self.nds_listbox.get_first_child()
+        while row is not None:
+            nxt = row.get_next_sibling()
+            key = getattr(row, "batch_key", None)
+            try:
+                if key and row.get_expanded():
+                    prev_expanded.add(str(key))
+            except Exception:
+                pass
+            self.nds_listbox.remove(row)
+            row = nxt
+        self._nds_expanded_keys = prev_expanded
+
+        def sort_key(it: BatchItem):
+            return (it.title or Path(it.rom_path).name).lower()
+
+        for item in sorted(self.nds_batch_items, key=sort_key):
+            if self.nds_show_only_problems and not (item.needs_user_input or item.needs_assets):
+                continue
+
+            rom_name = Path(item.rom_path).name
+
+            # Build status indicator
+            build_status = getattr(item, 'build_status', 'pending')
+            if build_status == "building":
+                build_indicator = "🔨 Building..."
+            elif build_status == "success":
+                build_indicator = "✅ Built"
+            elif build_status == "failed":
+                build_indicator = "❌ Failed"
+            else:
+                build_indicator = ""
+
+            # Title/art status indicators
+            title_status = "✓ Title OK" if not item.needs_user_input else "⚠️ Needs review"
+            art_status = "✓ Art OK" if not item.needs_assets else "⚠️ No label"
+
+            # Build subtitle
+            safe_rom_name = GLib.markup_escape_text(rom_name)
+            safe_title = GLib.markup_escape_text(item.title) if item.title else safe_rom_name
+            subtitle_parts = [safe_rom_name, title_status, art_status]
+            if build_indicator:
+                subtitle_parts.append(build_indicator)
+
+            expander = Adw.ExpanderRow(
+                title=safe_title,
+                subtitle=" | ".join(subtitle_parts),
+            )
+            expander.batch_key = item.rom_path
+            if item.rom_path in self._nds_expanded_keys:
+                expander.set_expanded(True)
+
+            # Add prefix icon based on status
+            if build_status == "building":
+                prefix_icon = Gtk.Image.new_from_icon_name("emblem-synchronizing-symbolic")
+                prefix_icon.add_css_class("accent")
+            elif build_status == "success":
+                prefix_icon = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
+                prefix_icon.add_css_class("success")
+            elif build_status == "failed":
+                prefix_icon = Gtk.Image.new_from_icon_name("dialog-error-symbolic")
+                prefix_icon.add_css_class("error")
+            elif item.needs_user_input or item.needs_assets:
+                prefix_icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+                prefix_icon.add_css_class("warning")
+            else:
+                prefix_icon = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
+                prefix_icon.add_css_class("success")
+            expander.add_prefix(prefix_icon)
+
+            # Add remove button
+            def _remove_rom(_btn, rom_path=item.rom_path):
+                self.nds_batch_items = [it for it in self.nds_batch_items if it.rom_path != rom_path]
+                self._render_nds_batch_items()
+                self._update_nds_batch_summary()
+
+            remove_btn = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER)
+            remove_btn.add_css_class("flat")
+            remove_btn.add_css_class("destructive-action")
+            remove_btn.set_tooltip_text("Remove this ROM")
+            remove_btn.connect("clicked", _remove_rom)
+            expander.add_suffix(remove_btn)
+
+            # CSS class for styling
+            if item.needs_user_input:
+                expander.add_css_class("batch-needs-title")
+            elif item.needs_assets:
+                expander.add_css_class("batch-needs-art")
+            else:
+                expander.add_css_class("batch-complete")
+
+            # ROM paths
+            safe_rom_path = GLib.markup_escape_text(item.rom_path)
+            safe_sd_path = GLib.markup_escape_text(item.sd_path)
+            rom_row = Adw.ActionRow(title="ROM File", subtitle=safe_rom_path)
+            sd_row = Adw.ActionRow(title="SD Path", subtitle=safe_sd_path)
+            expander.add_row(rom_row)
+            expander.add_row(sd_row)
+
+            # Preview section (icon from ROM, label, footer)
+            icon_path = self._extract_nds_icon(item.rom_path)
+            preview_box, footer_preview = self._create_preview_section(
+                item, rom_name, icon_path, icon_label="Icon (ROM)"
+            )
+            preview_row = Adw.ActionRow(title="Preview")
+            preview_row.set_child(preview_box)
+            expander.add_row(preview_row)
+
+            # Editable metadata with live footer updates
+            title_row = Adw.EntryRow(title="Title")
+            title_row.set_text(item.title or "")
+            year_row = Adw.EntryRow(title="Release Year (optional)")
+            year_row.set_text(item.year or "")
+
+            def _on_title_changed(entry, it=item, ex=expander, rn=rom_name, footer_pic=footer_preview):
+                it.title = entry.get_text().strip()
+                if it.title:
+                    it.confidence = 1.0
+                self._update_nds_batch_row_style(ex, it, rn)
+                self._update_nds_batch_summary()
+                sub = f"Released: {it.year.strip()}" if it.year and it.year.strip() else ""
+                footer_path = self._write_footer_preview_png(
+                    self.current_template_key, self.template_dir, it.title or rn, sub
+                )
+                self._set_picture_from_file(footer_pic, footer_path, 256, 64)
+
+            def _on_year_changed(entry, it=item, rn=rom_name, footer_pic=footer_preview):
+                it.year = entry.get_text().strip()
+                it.subtitle = it.year
+                sub = f"Released: {it.year.strip()}" if it.year and it.year.strip() else ""
+                footer_path = self._write_footer_preview_png(
+                    self.current_template_key, self.template_dir, it.title or rn, sub
+                )
+                self._set_picture_from_file(footer_pic, footer_path, 256, 64)
+
+            title_row.connect("changed", _on_title_changed)
+            year_row.connect("changed", _on_year_changed)
+            expander.add_row(title_row)
+            expander.add_row(year_row)
+
+            # Label picker using shared helper
+            label_row = self._create_label_picker_row(
+                item,
+                self.nds_batch_items,
+                self._render_nds_batch_items,
+                self._update_nds_batch_summary,
+                "_nds_scroll_to_key",
+                sgdb_fetch_callback=self._do_fetch_nds_item_art_with_prompt,
+            )
+            expander.add_row(label_row)
+
+            # Fit mode selector using shared helper
+            fit_row = self._create_fit_mode_selector(
+                item,
+                self.nds_batch_items,
+                self._render_nds_batch_items,
+                "_nds_scroll_to_key",
+                "_nds_batch_fit_updating",
+            )
+            expander.add_row(fit_row)
+
+            self.nds_listbox.append(expander)
+
+            # Track row for scroll-to
+            if scroll_to_key and item.rom_path == scroll_to_key:
+                def scroll_to_row(widget=expander):
+                    widget.grab_focus()
+                    return False
+                GLib.idle_add(scroll_to_row)
+
+        self._update_nds_batch_summary()
+        self._nds_scroll_to_key = None  # Clear after use
+
+    # =========================================================================
+    # GBA ROM Handlers
+    # =========================================================================
+
+    def on_add_gba_rom(self, button):
+        """Add a single GBA ROM file to the list."""
         def on_selected(path):
             try:
                 p = Path(path)
                 # Check if already added
-                if any(it.rom_path == str(p) for it in self.batch_items):
+                if any(it.rom_path == str(p) for it in self.gba_batch_items):
                     self.set_status(f"ROM already added: {p.name}")
                     return
 
@@ -573,18 +1191,18 @@ class ForwarderWindow(Adw.ApplicationWindow):
                     sd_path=sd_path,
                     title=title,
                     confidence=confidence,
-                    fit_mode=self.batch_fit_mode,
+                    fit_mode=self.gba_batch_fit_mode,
                 )
-                self.batch_items.append(item)
-                self._render_batch_items()
+                self.gba_batch_items.append(item)
+                self._render_gba_batch_items()
                 self.set_status(f"Added: {p.name}")
             except Exception as e:
                 self.set_status(f"Failed to add ROM: {e}", error=True)
 
         pick_file_zenity_async("Select GBA ROM", [("GBA ROMs", ["*.gba"])], callback=on_selected)
 
-    def on_add_folder(self, button):
-        """Scan a folder for ROMs and add them to the list."""
+    def on_add_gba_folder(self, button):
+        """Scan a folder for GBA ROMs and add them to the list."""
         def on_selected(path):
             try:
                 folder = Path(path)
@@ -593,16 +1211,16 @@ class ForwarderWindow(Adw.ApplicationWindow):
                     return
 
                 self.set_status("Scanning folder...")
-                Thread(target=self._do_scan_folder, args=(folder,), daemon=True).start()
+                Thread(target=self._do_scan_gba_folder, args=(folder,), daemon=True).start()
             except Exception as e:
                 self.set_status(f"Failed to scan folder: {e}", error=True)
 
         pick_folder_zenity_async("Select GBA ROM Folder", callback=on_selected)
 
-    def _do_scan_folder(self, folder: Path):
-        """Scan folder for ROMs in background thread."""
+    def _do_scan_gba_folder(self, folder: Path):
+        """Scan folder for GBA ROMs in background thread."""
         roms = sorted(folder.rglob("*.gba"))
-        existing = {it.rom_path for it in self.batch_items}
+        existing = {it.rom_path for it in self.gba_batch_items}
         new_count = 0
 
         for rom in roms:
@@ -610,67 +1228,67 @@ class ForwarderWindow(Adw.ApplicationWindow):
                 continue
             title, confidence = title_from_rom_filename(rom.name)
             sd_path = f"/roms/gba/{rom.name}"
-            self.batch_items.append(BatchItem(
+            self.gba_batch_items.append(BatchItem(
                 rom_path=str(rom),
                 sd_path=sd_path,
                 title=title,
                 confidence=confidence,
-                fit_mode=self.batch_fit_mode,
+                fit_mode=self.gba_batch_fit_mode,
             ))
             new_count += 1
 
         def update():
-            self._render_batch_items()
-            self.set_status(f"Added {new_count} ROM(s) from folder")
+            self._render_gba_batch_items()
+            self.set_status(f"Added {new_count} GBA ROM(s) from folder")
         GLib.idle_add(update)
 
-    def on_clear_all_roms(self, button):
-        """Clear all ROMs from the list."""
-        self.batch_items.clear()
-        self._render_batch_items()
-        self.set_status("Cleared all ROMs")
+    def on_clear_all_gba_roms(self, button):
+        """Clear all GBA ROMs from the list."""
+        self.gba_batch_items.clear()
+        self._render_gba_batch_items()
+        self.set_status("Cleared all GBA ROMs")
 
-    def _on_apply_fit_mode_all(self, button):
-        """Apply the current batch fit mode to all ROMs."""
-        if not self.batch_items:
+    def _on_apply_gba_fit_mode_all(self, button):
+        """Apply the current batch fit mode to all GBA ROMs."""
+        if not self.gba_batch_items:
             self.set_status("No ROMs to update", error=True)
             return
-        for item in self.batch_items:
-            item.fit_mode = self.batch_fit_mode
-        self._render_batch_items()
-        self.set_status(f"Applied '{self.batch_fit_mode}' fit mode to {len(self.batch_items)} ROM(s)")
+        for item in self.gba_batch_items:
+            item.fit_mode = self.gba_batch_fit_mode
+        self._render_gba_batch_items()
+        self.set_status(f"Applied '{self.gba_batch_fit_mode}' fit mode to {len(self.gba_batch_items)} ROM(s)")
 
-    def on_build_all(self, button):
-        """Build CIAs for all ROMs in the list."""
-        if not self.batch_items:
+    def on_build_all_gba(self, button):
+        """Build CIAs for all GBA ROMs in the list."""
+        if not self.gba_batch_items:
             self.set_status("Add ROMs first", error=True)
             return
         if self.docker_status != 'ready':
             self.set_status("Please build Docker image first", error=True)
             return
         self._warn_template_issues(self.current_template_key, self.template_dir, "Build")
-        self.build_btn.set_sensitive(False)
-        self.batch_fetch_btn.set_sensitive(False)
-        Thread(target=self._do_build_all, daemon=True).start()
+        self.gba_build_btn.set_sensitive(False)
+        self.gba_fetch_btn.set_sensitive(False)
+        Thread(target=self._do_build_all_gba, daemon=True).start()
 
-    def _do_build_all(self):
-        """Build all forwarders in background thread."""
+    def _do_build_all_gba(self):
+        """Build all GBA forwarders in background thread."""
         try:
             # Reset all build statuses
-            for item in self.batch_items:
+            for item in self.gba_batch_items:
                 item.build_status = "pending"
-            GLib.idle_add(self._render_batch_items)
+            GLib.idle_add(self._render_gba_batch_items)
 
-            total = max(1, len(self.batch_items))
+            total = max(1, len(self.gba_batch_items))
             success_count = 0
             fail_count = 0
 
-            for idx, item in enumerate(self.batch_items, start=1):
+            for idx, item in enumerate(self.gba_batch_items, start=1):
                 title = item.title or Path(item.rom_path).stem
 
                 # Mark as building and update UI
                 item.build_status = "building"
-                GLib.idle_add(self._render_batch_items)
+                GLib.idle_add(self._render_gba_batch_items)
 
                 success, _, error = self._build_forwarder_item(
                     item,
@@ -692,23 +1310,24 @@ class ForwarderWindow(Adw.ApplicationWindow):
                 frac = idx / total
                 def _update(f=frac, t=title, i=idx, tot=total, s=success_count, fl=fail_count):
                     self.set_progress(f)
-                    self.set_status(f"Building {i}/{tot}: {t} (✓{s} ✗{fl})")
-                    self._render_batch_items()
+                    self.set_status(f"[GBA] Building {i}/{tot}: {t} (✓{s} ✗{fl})")
+                    self._render_gba_batch_items()
                     return False
                 GLib.idle_add(_update)
 
             def _final():
-                self.set_status(f"Build complete: {success_count} succeeded, {fail_count} failed")
-                self._render_batch_items()
+                self.set_status(f"[GBA] Build complete: {success_count} succeeded, {fail_count} failed")
+                self._render_gba_batch_items()
             GLib.idle_add(_final)
         except Exception as e:
-            GLib.idle_add(lambda: self.set_status(f"Build error: {e}", error=True))
+            err_msg = str(e)
+            GLib.idle_add(lambda err=err_msg: self.set_status(f"Build error: {err}", error=True))
         finally:
             def finish():
-                self.build_btn.set_sensitive(bool(self.batch_items))
+                self.gba_build_btn.set_sensitive(bool(self.gba_batch_items))
                 have_key = bool(self.sgdb_api_key or os.environ.get("STEAMGRIDDB_API_KEY"))
-                missing_art = sum(1 for it in self.batch_items if it.needs_assets)
-                self.batch_fetch_btn.set_sensitive(have_key and missing_art > 0)
+                missing_art = sum(1 for it in self.gba_batch_items if it.needs_assets)
+                self.gba_fetch_btn.set_sensitive(have_key and missing_art > 0)
                 self.progress_bar.set_visible(False)
             GLib.idle_add(finish)
 
@@ -738,8 +1357,8 @@ class ForwarderWindow(Adw.ApplicationWindow):
         self._template_toggle_updating = False
         self._warn_template_issues(self.current_template_key, self.template_dir, "Template")
         # Re-render batch items to update footer previews with new template
-        if hasattr(self, "batch_listbox") and self.batch_items:
-            self._render_batch_items()
+        if hasattr(self, "batch_listbox") and self.gba_batch_items:
+            self._render_gba_batch_items()
 
     def _update_docker_status(self):
         if self.docker_status == 'ready':
@@ -825,9 +1444,266 @@ class ForwarderWindow(Adw.ApplicationWindow):
         except Exception:
             return None
 
-    def _on_batch_filter_toggle(self, switch, param):
-        self.batch_show_only_problems = bool(switch.get_active())
-        self._render_batch_items()
+    def _extract_nds_icon(self, rom_path: str) -> str | None:
+        """Extract icon from NDS ROM and cache it as a PNG file."""
+        try:
+            from generator.bannergif import bannergif
+
+            # Create cache key from ROM path
+            key = rom_path.encode("utf-8")
+            digest = hashlib.sha1(key).hexdigest()[:12]
+            out_dir = Path(tempfile.gettempdir()) / "mgba_forwarder_previews"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / f"nds_icon_{digest}.png"
+
+            if out_path.exists():
+                return str(out_path)
+
+            # Extract icon using bannergif
+            icon_img = bannergif(rom_path)
+            if icon_img is None or icon_img == -1:
+                return None
+
+            # Scale up from 32x32 to 48x48 for better display
+            icon_img = icon_img.convert("RGBA")
+            icon_img = icon_img.resize((48, 48), resample=0)  # Nearest neighbor for pixel art
+            icon_img.save(str(out_path))
+            return str(out_path)
+        except Exception:
+            return None
+
+    # =========================================================================
+    # SHARED UI COMPONENT HELPERS
+    # =========================================================================
+
+    def _create_preview_section(
+        self,
+        item: "BatchItem",
+        rom_name: str,
+        icon_path: str | None,
+        icon_label: str = "Icon",
+    ) -> tuple["Gtk.Box", "Gtk.Picture"]:
+        """
+        Create a preview section with icon, label, and footer previews.
+
+        Returns: (preview_box, footer_preview) - footer_preview for live updates
+        """
+        preview_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+        preview_box.set_halign(Gtk.Align.CENTER)
+        preview_box.set_margin_top(8)
+        preview_box.set_margin_bottom(8)
+
+        # Icon preview (48x48)
+        icon_frame = Gtk.Frame()
+        icon_frame.set_size_request(48, 48)
+        icon_preview = Gtk.Picture()
+        icon_preview.set_size_request(48, 48)
+        icon_preview.set_can_shrink(True)
+        icon_preview.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self._set_picture_from_file(icon_preview, icon_path, 48, 48)
+        icon_frame.set_child(icon_preview)
+
+        icon_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        icon_box.append(icon_frame)
+        icon_lbl = Gtk.Label(label=icon_label)
+        icon_lbl.add_css_class("dim-label")
+        icon_lbl.add_css_class("caption")
+        icon_box.append(icon_lbl)
+        preview_box.append(icon_box)
+
+        # Label preview (128x128 with fit mode)
+        label_frame = Gtk.Frame()
+        label_frame.set_size_request(128, 128)
+        label_preview = Gtk.Picture()
+        label_preview.set_size_request(128, 128)
+        label_preview.set_can_shrink(True)
+        label_preview.set_content_fit(Gtk.ContentFit.CONTAIN)
+        if item.label_file:
+            label_preview_path = self._generate_label_preview(item.label_file, item.fit_mode)
+        else:
+            label_preview_path = None
+        self._set_picture_from_file(label_preview, label_preview_path, 128, 128)
+        label_frame.set_child(label_preview)
+
+        label_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        label_box.append(label_frame)
+        label_lbl = Gtk.Label(label="Cartridge Label")
+        label_lbl.add_css_class("dim-label")
+        label_lbl.add_css_class("caption")
+        label_box.append(label_lbl)
+        preview_box.append(label_box)
+
+        # Footer preview (256x64)
+        footer_frame = Gtk.Frame()
+        footer_frame.set_size_request(256, 64)
+        footer_preview = Gtk.Picture()
+        footer_preview.set_size_request(256, 64)
+        footer_preview.set_can_shrink(True)
+        footer_preview.set_content_fit(Gtk.ContentFit.CONTAIN)
+        sub = f"Released: {item.year.strip()}" if item.year and item.year.strip() else ""
+        footer_path = self._write_footer_preview_png(
+            self.current_template_key, self.template_dir, item.title or rom_name, sub
+        )
+        self._set_picture_from_file(footer_preview, footer_path, 256, 64)
+        footer_frame.set_child(footer_preview)
+
+        footer_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        footer_box.append(footer_frame)
+        footer_lbl = Gtk.Label(label="Footer Text")
+        footer_lbl.add_css_class("dim-label")
+        footer_lbl.add_css_class("caption")
+        footer_box.append(footer_lbl)
+        preview_box.append(footer_box)
+
+        return preview_box, footer_preview
+
+    def _create_label_picker_row(
+        self,
+        item: "BatchItem",
+        batch_items: list,
+        render_callback,
+        summary_callback,
+        scroll_key_attr: str,
+        sgdb_fetch_callback=None,
+    ) -> "Adw.ActionRow":
+        """
+        Create a label picker row with Browse, SGDB, Open, Clear buttons.
+
+        Args:
+            item: The BatchItem to edit
+            batch_items: The list containing the item (for lookup by rom_path)
+            render_callback: Function to re-render the batch list
+            summary_callback: Function to update the summary
+            scroll_key_attr: Attribute name for scroll key (e.g., '_nds_scroll_to_key')
+            sgdb_fetch_callback: Optional callback for SGDB fetch (runs in thread)
+        """
+        label_row = Adw.ActionRow(title="Cartridge Label / Logo")
+        label_pic = Gtk.Picture()
+        label_pic.set_size_request(64, 64)
+        label_pic.set_content_fit(Gtk.ContentFit.CONTAIN)
+        label_pic.set_can_shrink(True)
+        self._set_picture_from_file(label_pic, item.label_file, 64, 64)
+
+        if item.label_file:
+            label_row.set_title("Cartridge Label / Logo [HAS IMAGE]")
+            label_row.set_subtitle(item.label_file)
+        else:
+            label_row.set_title("Cartridge Label / Logo")
+            label_row.set_subtitle("Not set (banner will use template label)")
+
+        label_suffix = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        label_suffix.append(label_pic)
+
+        label_browse = Gtk.Button(label="Browse", valign=Gtk.Align.CENTER)
+        label_fetch = Gtk.Button(label="SGDB", valign=Gtk.Align.CENTER)
+        label_fetch.set_tooltip_text("Pick and download a logo/label from SteamGridDB")
+        label_fetch.set_sensitive(bool(self.sgdb_api_key or os.environ.get("STEAMGRIDDB_API_KEY")))
+        label_open = Gtk.Button(icon_name="image-x-generic-symbolic", valign=Gtk.Align.CENTER)
+        label_open.add_css_class("flat")
+        label_open.set_tooltip_text("Open current label")
+        label_clear = Gtk.Button(icon_name="edit-clear-symbolic", valign=Gtk.Align.CENTER)
+        label_clear.add_css_class("flat")
+
+        def _set_label(path: str, rom_path=item.rom_path):
+            target = next((it for it in batch_items if it.rom_path == rom_path), None)
+            if target:
+                target.label_file = path
+            setattr(self, scroll_key_attr, rom_path)
+            render_callback()
+            summary_callback()
+
+        def _clear_label(_btn, rom_path=item.rom_path):
+            target = next((it for it in batch_items if it.rom_path == rom_path), None)
+            if target:
+                target.label_file = None
+            setattr(self, scroll_key_attr, rom_path)
+            render_callback()
+            summary_callback()
+
+        def _open_label(_btn, it=item):
+            if it.label_file:
+                subprocess.Popen(["xdg-open", it.label_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        label_browse.connect(
+            "clicked",
+            lambda *_, fn=_set_label: pick_file_zenity_async(
+                "Select Label/Logo Image",
+                [("Images", ["*.png", "*.jpg", "*.jpeg", "*.webp"])],
+                callback=lambda p, f=fn: f(p),
+            ),
+        )
+        label_open.connect("clicked", _open_label)
+        label_clear.connect("clicked", _clear_label)
+
+        if sgdb_fetch_callback:
+            label_fetch.connect(
+                "clicked",
+                lambda *_, it=item: Thread(target=sgdb_fetch_callback, args=(it,), daemon=True).start(),
+            )
+
+        label_suffix.append(label_browse)
+        label_suffix.append(label_fetch)
+        label_suffix.append(label_open)
+        label_suffix.append(label_clear)
+        label_row.add_suffix(label_suffix)
+        return label_row
+
+    def _create_fit_mode_selector(
+        self,
+        item: "BatchItem",
+        batch_items: list,
+        render_callback,
+        scroll_key_attr: str,
+        updating_flag_attr: str,
+    ) -> "Adw.ActionRow":
+        """
+        Create a fit mode selector row with Fit/Fill/Stretch toggle buttons.
+
+        Args:
+            item: The BatchItem to edit
+            batch_items: The list containing the item
+            render_callback: Function to re-render the batch list
+            scroll_key_attr: Attribute name for scroll key
+            updating_flag_attr: Attribute name for the updating flag
+        """
+        fit_row = Adw.ActionRow(title="Label Fit Mode")
+        fit_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        fit_box.set_valign(Gtk.Align.CENTER)
+
+        def _make_fit_handler(rom_path, mode):
+            def handler(btn):
+                if getattr(self, updating_flag_attr, False):
+                    return
+                if not btn.get_active():
+                    return
+                target = next((it for it in batch_items if it.rom_path == rom_path), None)
+                if target and target.fit_mode != mode:
+                    target.fit_mode = mode
+                    setattr(self, updating_flag_attr, True)
+                    setattr(self, scroll_key_attr, rom_path)
+                    render_callback()
+                    setattr(self, updating_flag_attr, False)
+            return handler
+
+        fit_buttons = {}
+        first_btn = None
+        for mode, label in [("fit", "Fit"), ("fill", "Fill"), ("stretch", "Stretch")]:
+            btn = Gtk.ToggleButton(label=label)
+            btn.connect("toggled", _make_fit_handler(item.rom_path, mode))
+            if first_btn is None:
+                first_btn = btn
+            else:
+                btn.set_group(first_btn)
+            fit_buttons[mode] = btn
+            fit_box.append(btn)
+
+        fit_buttons[item.fit_mode].set_active(True)
+        fit_row.add_suffix(fit_box)
+        return fit_row
+
+    def _on_gba_filter_toggle(self, switch, param):
+        self.gba_show_only_problems = bool(switch.get_active())
+        self._render_gba_batch_items()
 
     def _config_path(self) -> Path:
         return Path.home() / ".config" / "mgba-forwarder-tools" / "config.json"
@@ -854,7 +1730,7 @@ class ForwarderWindow(Adw.ApplicationWindow):
         try:
             self._save_user_config()
             self.set_status("Saved SteamGridDB API key")
-            self._render_batch_items()
+            self._render_gba_batch_items()
         except Exception as e:
             self.set_status(f"Failed to save key: {e}", error=True)
 
@@ -866,7 +1742,7 @@ class ForwarderWindow(Adw.ApplicationWindow):
         except Exception:
             pass
         self.set_status("Cleared SteamGridDB API key")
-        self._render_batch_items()
+        self._render_gba_batch_items()
 
     # =============================================================================
     # PICTURE HELPERS
@@ -1238,31 +2114,51 @@ class ForwarderWindow(Adw.ApplicationWindow):
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
 
-    def _update_batch_summary(self) -> None:
-        unresolved = sum(1 for it in self.batch_items if it.needs_user_input)
-        missing_art = sum(1 for it in self.batch_items if it.needs_assets)
-        count = len(self.batch_items)
+    def _update_gba_batch_summary(self) -> None:
+        unresolved = sum(1 for it in self.gba_batch_items if it.needs_user_input)
+        missing_art = sum(1 for it in self.gba_batch_items if it.needs_assets)
+        count = len(self.gba_batch_items)
         if count == 0:
-            self.batch_status_row.set_subtitle("No ROMs added yet")
+            self.gba_status_row.set_subtitle("No ROMs added yet")
         else:
-            self.batch_status_row.set_subtitle(
+            self.gba_status_row.set_subtitle(
                 f"{count} ROM(s) | {unresolved} need title | {missing_art} missing art"
             )
 
-        if hasattr(self, "batch_fetch_btn"):
+        if hasattr(self, "gba_fetch_btn"):
             have_key = bool(self.sgdb_api_key or os.environ.get("STEAMGRIDDB_API_KEY"))
-            self.batch_fetch_btn.set_sensitive(have_key and missing_art > 0)
+            self.gba_fetch_btn.set_sensitive(have_key and missing_art > 0)
 
-        # Update unified build button
-        if hasattr(self, "build_btn"):
-            self.build_btn.set_sensitive(count > 0)
+        # Update build button
+        if hasattr(self, "gba_build_btn"):
+            self.gba_build_btn.set_sensitive(count > 0)
             # Adjust button text based on ROM count
             if count == 1:
-                self.build_btn.set_label("Build CIA")
+                self.gba_build_btn.set_label("Build CIA")
             else:
-                self.build_btn.set_label(f"Build All CIAs ({count})")
+                self.gba_build_btn.set_label(f"Build All CIAs ({count})")
 
-    def _update_batch_row_style(self, row: "Adw.ExpanderRow", item: BatchItem, rom_name: str) -> None:
+    def _update_nds_batch_row_style(self, row: "Adw.ExpanderRow", item: BatchItem, rom_name: str) -> None:
+        """Update the style and subtitle of an NDS batch row when data changes."""
+        title_status = "✓ Title OK" if not item.needs_user_input else "⚠️ Needs review"
+        art_status = "✓ Art OK" if not item.needs_assets else "⚠️ No label"
+        # Escape special characters for GTK markup
+        safe_rom_name = GLib.markup_escape_text(rom_name)
+        safe_title = GLib.markup_escape_text(item.title) if item.title else safe_rom_name
+        row.set_title(safe_title)
+        row.set_subtitle(f"{safe_rom_name} | {title_status} | {art_status}")
+
+        row.remove_css_class("batch-needs-title")
+        row.remove_css_class("batch-needs-art")
+        row.remove_css_class("batch-complete")
+        if item.needs_user_input:
+            row.add_css_class("batch-needs-title")
+        elif item.needs_assets:
+            row.add_css_class("batch-needs-art")
+        else:
+            row.add_css_class("batch-complete")
+
+    def _update_gba_batch_row_style(self, row: "Adw.ExpanderRow", item: BatchItem, rom_name: str) -> None:
         art_status = "OK" if not item.needs_assets else "Missing"
         title_status = "OK" if not item.needs_user_input else "Needs review"
         # Escape special characters for GTK markup
@@ -1279,12 +2175,12 @@ class ForwarderWindow(Adw.ApplicationWindow):
         elif item.needs_assets:
             row.add_css_class("batch-needs-art")
 
-    def _render_batch_items(self):
+    def _render_gba_batch_items(self):
         """Rebuild the batch item list UI."""
         # Remember which rows were expanded so fetches don't collapse them.
         prev_expanded: set[str] = set()
         scroll_to_key = getattr(self, '_batch_scroll_to_key', None)
-        row = self.batch_listbox.get_first_child()
+        row = self.gba_listbox.get_first_child()
         while row is not None:
             nxt = row.get_next_sibling()
             key = getattr(row, "batch_key", None)
@@ -1293,16 +2189,16 @@ class ForwarderWindow(Adw.ApplicationWindow):
                     prev_expanded.add(str(key))
             except Exception:
                 pass
-            self.batch_listbox.remove(row)
+            self.gba_listbox.remove(row)
             row = nxt
-        self._batch_expanded_keys = prev_expanded
+        self._gba_expanded_keys = prev_expanded
 
         def sort_key(it: BatchItem):
             # Sort alphabetically by title/filename only
             return (it.title or Path(it.rom_path).name).lower()
 
-        for item in sorted(self.batch_items, key=sort_key):
-            if self.batch_show_only_problems and not (item.needs_user_input or item.needs_assets):
+        for item in sorted(self.gba_batch_items, key=sort_key):
+            if self.gba_show_only_problems and not (item.needs_user_input or item.needs_assets):
                 continue
 
             rom_name = Path(item.rom_path).name
@@ -1346,7 +2242,7 @@ class ForwarderWindow(Adw.ApplicationWindow):
                 subtitle=" | ".join(subtitle_parts),
             )
             expander.batch_key = item.rom_path
-            if item.rom_path in self._batch_expanded_keys:
+            if item.rom_path in self._gba_expanded_keys:
                 expander.set_expanded(True)
 
             # Add prefix icon based on status (prioritize build status)
@@ -1369,9 +2265,9 @@ class ForwarderWindow(Adw.ApplicationWindow):
 
             # Add remove button
             def _remove_rom(_btn, rom_path=item.rom_path):
-                self.batch_items = [it for it in self.batch_items if it.rom_path != rom_path]
-                self._render_batch_items()
-                self._update_batch_summary()
+                self.gba_batch_items = [it for it in self.gba_batch_items if it.rom_path != rom_path]
+                self._render_gba_batch_items()
+                self._update_gba_batch_summary()
 
             remove_btn = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER)
             remove_btn.add_css_class("flat")
@@ -1395,76 +2291,10 @@ class ForwarderWindow(Adw.ApplicationWindow):
             expander.add_row(rom_row)
             expander.add_row(sd_row)
 
-            # Quick previews (icon, label, footer) - match single mode formatting exactly
-            preview_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
-            preview_box.set_halign(Gtk.Align.CENTER)
-            preview_box.set_margin_top(8)
-            preview_box.set_margin_bottom(8)
-
-            # Icon preview (48x48 like single mode)
-            icon_frame = Gtk.Frame()
-            icon_frame.set_size_request(48, 48)
-            icon_preview = Gtk.Picture()
-            icon_preview.set_size_request(48, 48)
-            icon_preview.set_can_shrink(True)
-            icon_preview.set_content_fit(Gtk.ContentFit.CONTAIN)
-            icon_preview_path = item.icon_file
-            self._set_picture_from_file(icon_preview, icon_preview_path, 48, 48)
-            icon_frame.set_child(icon_preview)
-
-            icon_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            icon_box.append(icon_frame)
-            icon_lbl = Gtk.Label(label="Icon")
-            icon_lbl.add_css_class("dim-label")
-            icon_lbl.add_css_class("caption")
-            icon_box.append(icon_lbl)
-            preview_box.append(icon_box)
-
-            # Label preview (128x128 like single mode)
-            label_frame = Gtk.Frame()
-            label_frame.set_size_request(128, 128)
-            label_preview = Gtk.Picture()
-            label_preview.set_size_request(128, 128)
-            label_preview.set_can_shrink(True)
-            label_preview.set_content_fit(Gtk.ContentFit.CONTAIN)
-            # Generate fit-mode-aware preview for batch item
-            if item.label_file:
-                label_preview_path = self._generate_label_preview(item.label_file, item.fit_mode)
-            else:
-                label_preview_path = None
-            self._set_picture_from_file(label_preview, label_preview_path, 128, 128)
-            label_frame.set_child(label_preview)
-
-            label_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            label_box.append(label_frame)
-            label_lbl = Gtk.Label(label="Cartridge Label")
-            label_lbl.add_css_class("dim-label")
-            label_lbl.add_css_class("caption")
-            label_box.append(label_lbl)
-            preview_box.append(label_box)
-
-            # Footer preview (256x64 like single mode)
-            footer_frame = Gtk.Frame()
-            footer_frame.set_size_request(256, 64)
-            footer_preview = Gtk.Picture()
-            footer_preview.set_size_request(256, 64)
-            footer_preview.set_can_shrink(True)
-            footer_preview.set_content_fit(Gtk.ContentFit.CONTAIN)
-            sub = f"Released: {item.year.strip()}" if item.year.strip() else ""
-            footer_path = self._write_footer_preview_png(
-                self.current_template_key, self.template_dir, item.title or rom_name, sub
+            # Preview section (icon, label, footer) using shared helper
+            preview_box, footer_preview = self._create_preview_section(
+                item, rom_name, item.icon_file, icon_label="Icon"
             )
-            self._set_picture_from_file(footer_preview, footer_path, 256, 64)
-            footer_frame.set_child(footer_preview)
-
-            footer_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            footer_box.append(footer_frame)
-            footer_lbl = Gtk.Label(label="Footer Text")
-            footer_lbl.add_css_class("dim-label")
-            footer_lbl.add_css_class("caption")
-            footer_box.append(footer_lbl)
-            preview_box.append(footer_box)
-
             preview_row = Adw.ActionRow(title="Preview")
             preview_row.set_child(preview_box)
             expander.add_row(preview_row)
@@ -1479,8 +2309,8 @@ class ForwarderWindow(Adw.ApplicationWindow):
                 it.title = entry.get_text().strip()
                 if it.title:
                     it.confidence = 1.0
-                self._update_batch_row_style(ex, it, rn)
-                self._update_batch_summary()
+                self._update_gba_batch_row_style(ex, it, rn)
+                self._update_gba_batch_summary()
                 sub = f"Released: {it.year.strip()}" if it.year.strip() else ""
                 footer_path = self._write_footer_preview_png(
                     self.current_template_key, self.template_dir, it.title or rn, sub
@@ -1525,20 +2355,20 @@ class ForwarderWindow(Adw.ApplicationWindow):
             icon_clear.add_css_class("flat")
 
             def _set_icon(path: str, rom_path=item.rom_path):
-                target = next((it for it in self.batch_items if it.rom_path == rom_path), None)
+                target = next((it for it in self.gba_batch_items if it.rom_path == rom_path), None)
                 if target:
                     target.icon_file = path
-                self._batch_scroll_to_key = rom_path
-                self._render_batch_items()
-                self._update_batch_summary()
+                self._gba_scroll_to_key = rom_path
+                self._render_gba_batch_items()
+                self._update_gba_batch_summary()
 
             def _clear_icon(_btn, rom_path=item.rom_path):
-                target = next((it for it in self.batch_items if it.rom_path == rom_path), None)
+                target = next((it for it in self.gba_batch_items if it.rom_path == rom_path), None)
                 if target:
                     target.icon_file = None
-                self._batch_scroll_to_key = rom_path
-                self._render_batch_items()
-                self._update_batch_summary()
+                self._gba_scroll_to_key = rom_path
+                self._render_gba_batch_items()
+                self._update_gba_batch_summary()
 
             def _open_icon(_btn, it=item):
                 if it.icon_file:
@@ -1569,111 +2399,31 @@ class ForwarderWindow(Adw.ApplicationWindow):
             icon_row.add_suffix(icon_suffix)
             expander.add_row(icon_row)
 
-            # Label/logo picker + preview
-            label_row = Adw.ActionRow(title="Cartridge Label / Logo")
-            label_pic = Gtk.Picture()
-            label_pic.set_size_request(64, 64)
-            label_pic.set_content_fit(Gtk.ContentFit.CONTAIN)
-            label_pic.set_can_shrink(True)
-            self._set_picture_from_file(label_pic, item.label_file, 64, 64)
-            if item.label_file:
-                label_row.set_title("Cartridge Label / Logo [HAS IMAGE]")
-                label_row.set_subtitle(item.label_file)
-            else:
-                label_row.set_title("Cartridge Label / Logo")
-                label_row.set_subtitle("Not set (banner will use template label)")
+            # Label picker using shared helper
+            def _gba_label_fetch(it):
+                self._do_fetch_item_art_with_prompt(it, "logo")
 
-            label_suffix = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            label_suffix.append(label_pic)
-            label_browse = Gtk.Button(label="Browse", valign=Gtk.Align.CENTER)
-            label_fetch = Gtk.Button(label="SGDB", valign=Gtk.Align.CENTER)
-            label_fetch.set_tooltip_text("Pick and download a logo/label from SteamGridDB")
-            label_fetch.set_sensitive(bool(self.sgdb_api_key or os.environ.get("STEAMGRIDDB_API_KEY")))
-            label_open = Gtk.Button(icon_name="image-x-generic-symbolic", valign=Gtk.Align.CENTER)
-            label_open.add_css_class("flat")
-            label_open.set_tooltip_text("Open current label")
-            label_clear = Gtk.Button(icon_name="edit-clear-symbolic", valign=Gtk.Align.CENTER)
-            label_clear.add_css_class("flat")
-
-            def _set_label(path: str, rom_path=item.rom_path):
-                # Find the item by rom_path (stable identifier)
-                target = next((it for it in self.batch_items if it.rom_path == rom_path), None)
-                if target:
-                    target.label_file = path
-                # Re-render to update UI with new label
-                self._batch_scroll_to_key = rom_path
-                self._render_batch_items()
-                self._update_batch_summary()
-
-            def _clear_label(_btn, rom_path=item.rom_path):
-                target = next((it for it in self.batch_items if it.rom_path == rom_path), None)
-                if target:
-                    target.label_file = None
-                self._batch_scroll_to_key = rom_path
-                self._render_batch_items()
-                self._update_batch_summary()
-
-            def _open_label(_btn, it=item):
-                if it.label_file:
-                    subprocess.Popen(["xdg-open", it.label_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-            label_browse.connect(
-                "clicked",
-                lambda *_, fn=_set_label: pick_file_zenity_async(
-                    "Select Label/Logo Image",
-                    [("Images", ["*.png", "*.jpg", "*.jpeg", "*.webp"])],
-                    callback=lambda p, f=fn: f(p),
-                ),
+            label_row = self._create_label_picker_row(
+                item,
+                self.gba_batch_items,
+                self._render_gba_batch_items,
+                self._update_gba_batch_summary,
+                "_gba_scroll_to_key",
+                sgdb_fetch_callback=_gba_label_fetch,
             )
-            label_open.connect("clicked", _open_label)
-            label_clear.connect("clicked", _clear_label)
-
-            label_fetch.connect(
-                "clicked",
-                lambda *_,
-                it=item: Thread(
-                    target=self._do_fetch_item_art_with_prompt, args=(it, "logo"), daemon=True
-                ).start(),
-            )
-            label_suffix.append(label_browse)
-            label_suffix.append(label_fetch)
-            label_suffix.append(label_open)
-            label_suffix.append(label_clear)
-            label_row.add_suffix(label_suffix)
             expander.add_row(label_row)
 
-            # Fit mode selection for this item
-            fit_row = Adw.ActionRow(title="Label Fit Mode")
-            fit_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            fit_box.set_valign(Gtk.Align.CENTER)
-
-            def _make_fit_handler(rom_path, mode):
-                def handler(btn):
-                    if getattr(self, '_batch_fit_updating', False):
-                        return
-                    if not btn.get_active():
-                        return
-                    target = next((it for it in self.batch_items if it.rom_path == rom_path), None)
-                    if target and target.fit_mode != mode:
-                        target.fit_mode = mode
-                        # Re-render to update preview
-                        self._batch_fit_updating = True
-                        self._batch_scroll_to_key = rom_path
-                        self._render_batch_items()
-                        self._batch_fit_updating = False
-                return handler
-
-            fit_buttons = {}
-            for mode, label in [("fit", "Fit"), ("fill", "Fill"), ("stretch", "Stretch")]:
-                btn = Gtk.ToggleButton(label=label)
-                btn.connect("toggled", _make_fit_handler(item.rom_path, mode))
-                fit_buttons[mode] = btn
-                fit_box.append(btn)
-            fit_buttons[item.fit_mode].set_active(True)
-            fit_row.add_suffix(fit_box)
+            # Fit mode selector using shared helper
+            fit_row = self._create_fit_mode_selector(
+                item,
+                self.gba_batch_items,
+                self._render_gba_batch_items,
+                "_gba_scroll_to_key",
+                "_batch_fit_updating",
+            )
             expander.add_row(fit_row)
 
-            self.batch_listbox.append(expander)
+            self.gba_listbox.append(expander)
 
             # Track row for scroll-to
             if scroll_to_key and item.rom_path == scroll_to_key:
@@ -1683,28 +2433,28 @@ class ForwarderWindow(Adw.ApplicationWindow):
                     return False
                 GLib.idle_add(scroll_to_row)
 
-        self._update_batch_summary()
-        self._batch_scroll_to_key = None  # Clear after use
+        self._update_gba_batch_summary()
+        self._gba_scroll_to_key = None  # Clear after use
 
     # =============================================================================
     # STEAMGRIDDB ART FETCHING
     # =============================================================================
 
-    def on_fetch_batch_art(self, button):
-        if not self.batch_items:
+    def on_fetch_gba_batch_art(self, button):
+        if not self.gba_batch_items:
             self.set_status("Add ROMs first", error=True)
             return
         if not (self.sgdb_api_key or os.environ.get("STEAMGRIDDB_API_KEY")):
             self.set_status("Set SteamGridDB API key first", error=True)
             return
-        self.batch_fetch_btn.set_sensitive(False)
-        self.build_btn.set_sensitive(False)
-        self.batch_fetch_progress.set_fraction(0)
+        self.gba_fetch_btn.set_sensitive(False)
+        self.gba_build_btn.set_sensitive(False)
+        self.gba_fetch_progress.set_fraction(0)
         try:
-            self.batch_fetch_progress_row.set_visible(True)
+            self.gba_fetch_progress_row.set_visible(True)
         except Exception:
             pass
-        self.batch_fetch_progress.set_visible(True)
+        self.gba_fetch_progress.set_visible(True)
         Thread(target=self._do_fetch_batch_art, daemon=True).start()
 
     def _sgdb_select_game_id(self, query: str) -> int | None:
@@ -2051,90 +2801,167 @@ class ForwarderWindow(Adw.ApplicationWindow):
                 item.label_file = str(logo_path)
 
         except Exception as e:
-            GLib.idle_add(lambda: self.set_status(f"SteamGridDB fetch failed: {e}", error=True))
+            err_msg = str(e)
+            GLib.idle_add(lambda err=err_msg: self.set_status(f"SteamGridDB fetch failed: {err}", error=True))
         finally:
-            GLib.idle_add(self._render_batch_items)
+            GLib.idle_add(self._render_gba_batch_items)
 
-    def _do_fetch_batch_art(self):
+    def _do_fetch_nds_item_art_with_prompt(self, item: BatchItem) -> None:
+        """Fetch logo/label art for NDS item (no icon, it comes from ROM)."""
         try:
-            from difflib import SequenceMatcher
-            from steamgriddb import SteamGridDBClient, SteamGridDBError
+            from steamgriddb import SteamGridDBClient
+
+            if not item.title:
+                return
 
             client = SteamGridDBClient(api_key=self.sgdb_api_key or None)
             cache_dir = self.output_path / ".sgdb_cache"
             cache_dir.mkdir(parents=True, exist_ok=True)
 
-            candidates = [it for it in self.batch_items if it.title and it.needs_assets]
-            total = max(1, len(candidates))
-            for idx, item in enumerate(candidates, start=1):
-                if not item.title:
-                    continue
+            # Always prompt for game selection
+            game_id = self._sgdb_select_game_id(item.title)
+            if game_id is None:
+                return
+            item.sgdb_game_id = game_id
 
-                if item.sgdb_game_id is None:
-                    results = client.search_autocomplete(item.title)
-                    if not results:
-                        continue
-                    best = max(
-                        results,
-                        key=lambda g: SequenceMatcher(None, item.title.lower(), g.name.lower()).ratio(),
-                    )
-                    ratio = SequenceMatcher(None, item.title.lower(), best.name.lower()).ratio()
-                    if ratio < 0.6:
-                        continue
-                    item.sgdb_game_id = best.id
+            # Only fetch logo/label (not icon - that comes from ROM for NDS)
+            assets = self._prepare_asset_previews(client, self._sgdb_list_assets(client, game_id, "logo"))
+            chosen = self._pick_asset_with_preview(assets, item.title, "Logo/Label")
+            if chosen:
+                item.logo_url = chosen
+            elif item.logo_url is None:
+                item.logo_url = client.best_logo_url(game_id)
 
-                game_id = item.sgdb_game_id
-                if game_id is None:
-                    continue
+            game_dir = cache_dir / str(game_id)
+            game_dir.mkdir(parents=True, exist_ok=True)
 
-                if item.icon_url is None:
-                    item.icon_url = client.best_icon_url(game_id)
-                if item.logo_url is None:
-                    item.logo_url = client.best_logo_url(game_id)
+            if item.logo_url and item.label_file is None:
+                data = client.download(item.logo_url)
+                logo_ext = Path(urllib.parse.urlparse(item.logo_url).path).suffix or ".png"
+                logo_path = game_dir / f"logo{logo_ext}"
+                logo_path.write_bytes(data)
+                item.label_file = str(logo_path)
 
-                game_dir = cache_dir / str(game_id)
-                game_dir.mkdir(parents=True, exist_ok=True)
-
-                if item.icon_url and item.icon_file is None:
-                    data = client.download(item.icon_url)
-                    icon_ext = Path(urllib.parse.urlparse(item.icon_url).path).suffix or ".png"
-                    icon_path = game_dir / f"icon{icon_ext}"
-                    icon_path.write_bytes(data)
-                    item.icon_file = str(icon_path)
-
-                if item.logo_url and item.label_file is None:
-                    data = client.download(item.logo_url)
-                    logo_ext = Path(urllib.parse.urlparse(item.logo_url).path).suffix or ".png"
-                    logo_path = game_dir / f"logo{logo_ext}"
-                    logo_path.write_bytes(data)
-                    item.label_file = str(logo_path)
-
-                frac = idx / total
-                GLib.idle_add(lambda f=frac, t=item.title: self._set_batch_fetch_progress(f, t))
-
-        except SteamGridDBError as e:
-            GLib.idle_add(lambda: self.set_status(f"SteamGridDB fetch failed: {e}", error=True))
         except Exception as e:
-            GLib.idle_add(lambda: self.set_status(f"SteamGridDB fetch failed: {e}", error=True))
+            err_msg = str(e)
+            GLib.idle_add(lambda err=err_msg: self.set_status(f"SteamGridDB fetch failed: {err}", error=True))
+        finally:
+            GLib.idle_add(self._render_nds_batch_items)
+
+    # =========================================================================
+    # SHARED BATCH ART FETCHING
+    # =========================================================================
+
+    def _do_fetch_batch_art_for_items(
+        self,
+        items: list,
+        *,
+        fetch_icon: bool = True,
+        fetch_logo: bool = True,
+        progress_callback,
+    ) -> None:
+        """
+        Shared batch art fetching logic for both GBA and NDS.
+
+        Args:
+            items: List of BatchItem to fetch art for
+            fetch_icon: Whether to fetch icons (True for GBA, False for NDS)
+            fetch_logo: Whether to fetch logos/labels
+            progress_callback: Function(fraction, title) to call for progress updates
+        """
+        from difflib import SequenceMatcher
+        from steamgriddb import SteamGridDBClient, SteamGridDBError
+
+        client = SteamGridDBClient(api_key=self.sgdb_api_key or None)
+        cache_dir = self.output_path / ".sgdb_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        candidates = [it for it in items if it.title and it.needs_assets]
+        total = max(1, len(candidates))
+
+        for idx, item in enumerate(candidates, start=1):
+            if not item.title:
+                continue
+
+            # Auto-match game using fuzzy matching
+            if item.sgdb_game_id is None:
+                results = client.search_autocomplete(item.title)
+                if not results:
+                    continue
+                best = max(
+                    results,
+                    key=lambda g: SequenceMatcher(None, item.title.lower(), g.name.lower()).ratio(),
+                )
+                ratio = SequenceMatcher(None, item.title.lower(), best.name.lower()).ratio()
+                if ratio < 0.6:
+                    continue
+                item.sgdb_game_id = best.id
+
+            game_id = item.sgdb_game_id
+            if game_id is None:
+                continue
+
+            # Fetch URLs
+            if fetch_icon and item.icon_url is None:
+                item.icon_url = client.best_icon_url(game_id)
+            if fetch_logo and item.logo_url is None:
+                item.logo_url = client.best_logo_url(game_id)
+
+            game_dir = cache_dir / str(game_id)
+            game_dir.mkdir(parents=True, exist_ok=True)
+
+            # Download files
+            if fetch_icon and item.icon_url and item.icon_file is None:
+                data = client.download(item.icon_url)
+                icon_ext = Path(urllib.parse.urlparse(item.icon_url).path).suffix or ".png"
+                icon_path = game_dir / f"icon{icon_ext}"
+                icon_path.write_bytes(data)
+                item.icon_file = str(icon_path)
+
+            if fetch_logo and item.logo_url and item.label_file is None:
+                data = client.download(item.logo_url)
+                logo_ext = Path(urllib.parse.urlparse(item.logo_url).path).suffix or ".png"
+                logo_path = game_dir / f"logo{logo_ext}"
+                logo_path.write_bytes(data)
+                item.label_file = str(logo_path)
+
+            frac = idx / total
+            GLib.idle_add(lambda f=frac, t=item.title: progress_callback(f, t))
+
+    def _do_fetch_batch_art(self):
+        """Fetch art for GBA ROMs (both icon and logo)."""
+        try:
+            self._do_fetch_batch_art_for_items(
+                self.gba_batch_items,
+                fetch_icon=True,
+                fetch_logo=True,
+                progress_callback=self._set_batch_fetch_progress,
+            )
+        except Exception as e:
+            err_msg = str(e)
+            GLib.idle_add(lambda err=err_msg: self.set_status(f"SteamGridDB fetch failed: {err}", error=True))
         finally:
             GLib.idle_add(self._finish_batch_fetch)
 
     def _set_batch_fetch_progress(self, fraction: float, title: str) -> bool:
-        self.batch_fetch_progress.set_fraction(fraction)
+        self.gba_fetch_progress.set_fraction(fraction)
         self.set_status(f"Fetching art… {int(fraction*100)}% ({title})")
         return False
 
     def _finish_batch_fetch(self) -> bool:
         try:
-            self.batch_fetch_progress.set_visible(False)
-            if hasattr(self, "batch_fetch_progress_row"):
-                self.batch_fetch_progress_row.set_visible(False)
+            self.gba_fetch_progress.set_visible(False)
+            if hasattr(self, "gba_fetch_progress_row"):
+                self.gba_fetch_progress_row.set_visible(False)
         except Exception:
             pass
-        self._render_batch_items()
-        if hasattr(self, "build_btn"):
-            self.build_btn.set_sensitive(bool(self.batch_items))
-        self.set_status("Art fetch complete")
+        self._render_gba_batch_items()
+        # Re-enable buttons
+        have_key = bool(self.sgdb_api_key or os.environ.get("STEAMGRIDDB_API_KEY"))
+        missing_art = sum(1 for it in self.gba_batch_items if it.needs_assets)
+        self.gba_fetch_btn.set_sensitive(have_key and missing_art > 0)
+        self.gba_build_btn.set_sensitive(bool(self.gba_batch_items))
+        self.set_status("[GBA] Art fetch complete")
         return False
 
     # =============================================================================
