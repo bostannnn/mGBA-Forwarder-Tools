@@ -258,13 +258,68 @@ class UniversalVCBannerPatcher:
         canvas.paste(img, (x, y), img)
         return canvas
 
-    def patch_cartridge_label(self, image_path: str, bg_color: Optional[Tuple[int, int, int]] = None) -> None:
+    def _fill_image(
+        self,
+        img: "Image.Image",
+        width: int,
+        height: int,
+        bg_color: Optional[Tuple[int, int, int]] = None,
+    ) -> "Image.Image":
+        """Resize to cover width/height; crop center."""
+        img = img.convert("RGBA")
+
+        img_ratio = img.width / img.height
+        target_ratio = width / height
+        if img_ratio > target_ratio:
+            # Image is wider - scale by height, crop width
+            new_h = height
+            new_w = max(1, int(img.width * (height / img.height)))
+        else:
+            # Image is taller - scale by width, crop height
+            new_w = width
+            new_h = max(1, int(img.height * (width / img.width)))
+
+        img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        # Crop center
+        left = (new_w - width) // 2
+        top = (new_h - height) // 2
+        img = img.crop((left, top, left + width, top + height))
+        return img
+
+    def _stretch_image(
+        self,
+        img: "Image.Image",
+        width: int,
+        height: int,
+        bg_color: Optional[Tuple[int, int, int]] = None,
+    ) -> "Image.Image":
+        """Stretch to exact dimensions (may distort aspect ratio)."""
+        img = img.convert("RGBA")
+        return img.resize((width, height), Image.Resampling.LANCZOS)
+
+    def _resize_image(
+        self,
+        img: "Image.Image",
+        width: int,
+        height: int,
+        bg_color: Optional[Tuple[int, int, int]] = None,
+        fit_mode: str = "fit",
+    ) -> "Image.Image":
+        """Resize image using specified fit mode."""
+        if fit_mode == "fill":
+            return self._fill_image(img, width, height, bg_color)
+        elif fit_mode == "stretch":
+            return self._stretch_image(img, width, height, bg_color)
+        else:  # default to "fit"
+            return self._fit_image(img, width, height, bg_color)
+
+    def patch_cartridge_label(self, image_path: str, bg_color: Optional[Tuple[int, int, int]] = None, fit_mode: str = "fit") -> None:
         if Image is None:
             print("Warning: Pillow (PIL) not available; skipping cartridge label patch")
             return
 
         img = Image.open(image_path)
-        print(f"  Patching COMMON1 label: {image_path}")
+        print(f"  Patching COMMON1 label: {image_path} (fit_mode={fit_mode})")
 
         # Build a framed 128x128 label with a centered inner art box.
         outer_size = 128
@@ -286,7 +341,7 @@ class UniversalVCBannerPatcher:
             luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
             plate_color = (230, 230, 230) if luma < 128 else (16, 16, 16)
 
-        inner_img = self._fit_image(img, inner_w, inner_h, plate_color)
+        inner_img = self._resize_image(img, inner_w, inner_h, plate_color, fit_mode)
 
         framed_128 = Image.new("RGBA", (outer_size, outer_size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(framed_128)
@@ -535,6 +590,8 @@ def main() -> int:
     parser.add_argument("-o", "--output", default="banner.bnr", help="Output banner file")
     parser.add_argument("--cartridge", "--label", help="Cartridge label image (any format)")
     parser.add_argument("--bg-color", help="Background color R,G,B for label (e.g. 50,50,70)")
+    parser.add_argument("--fit-mode", choices=["fit", "fill", "stretch"], default="fit",
+                        help="Cartridge label resize mode: fit (default), fill, or stretch")
     parser.add_argument("--title", help="Footer title text")
     parser.add_argument("--subtitle", help="Footer subtitle text")
     args = parser.parse_args()
@@ -548,7 +605,7 @@ def main() -> int:
     patcher = UniversalVCBannerPatcher(args.template)
 
     if args.cartridge:
-        patcher.patch_cartridge_label(args.cartridge, bg_color)
+        patcher.patch_cartridge_label(args.cartridge, bg_color, args.fit_mode)
 
     if args.title or args.subtitle:
         patcher.patch_footer_text(args.title or "", args.subtitle)

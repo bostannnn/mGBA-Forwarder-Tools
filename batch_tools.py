@@ -63,6 +63,8 @@ class BatchItem:
     logo_url: str | None = None
     icon_file: str | None = None
     label_file: str | None = None
+    fit_mode: str = "fit"  # fit, fill, or stretch
+    build_status: str = "pending"  # pending, building, success, failed
 
     @property
     def needs_user_input(self) -> bool:

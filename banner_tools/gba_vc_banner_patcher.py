@@ -72,6 +72,16 @@ def resize_cover(img, width, height):
     return img
 
 
+def resize_stretch(img, width, height):
+    """
+    Resize image using 'stretch' mode: stretch to exact dimensions.
+    This may distort the aspect ratio.
+    """
+    if img.mode != 'RGBA':
+        img = img.convert('RGBA')
+    return img.resize((width, height), Image.LANCZOS)
+
+
 def resize_fit(img, width, height):
     """
     Resize image using 'fit' mode: scale to fit within target area, center on transparent background.
@@ -109,15 +119,12 @@ def resize_fit(img, width, height):
     return result
 
 
-def encode_rgb565_tiled(img, width=128, height=128, bg_color=None):
+def encode_rgb565_tiled(img, width=128, height=128, bg_color=None, fit_mode="fit"):
     """
     Encode image to RGB565 8x8 Morton-tiled format (NSUI COMMON1 format)
 
     Layout: 8x8 tiles with Morton (Z-order) pixel arrangement.
     Each pixel is 2 bytes (RGB565).
-
-    Uses 'fit' mode: scales image to fit within target, centers on background.
-    This ensures the entire image is visible without cropping.
 
     Args:
         img: PIL Image to encode
@@ -125,12 +132,21 @@ def encode_rgb565_tiled(img, width=128, height=128, bg_color=None):
         height: Target height (default 128)
         bg_color: Optional background color as (R, G, B) tuple (0-255).
                   If None, uses default dark color (50, 50, 70).
+        fit_mode: Resize mode - 'fit' (default), 'fill', or 'stretch'
+                  - fit: Scale to fit within target, center on background (entire image visible)
+                  - fill: Scale to cover target, crop center (fills area, may crop edges)
+                  - stretch: Stretch to exact dimensions (may distort aspect ratio)
 
     Note: RGB565 has no alpha channel. Images with transparency are
     composited onto a background color to prevent white lines.
     """
     if img.size != (width, height):
-        img = resize_fit(img, width, height)
+        if fit_mode == "fill":
+            img = resize_cover(img, width, height)
+        elif fit_mode == "stretch":
+            img = resize_stretch(img, width, height)
+        else:  # default to "fit"
+            img = resize_fit(img, width, height)
 
     # Default background color if not specified
     if bg_color is None:
@@ -431,19 +447,20 @@ class GBAVCBannerPatcher:
             self.audio = f.read()
         print(f"Loaded audio: {len(self.audio):,} bytes")
     
-    def patch_common1(self, image_path, bg_color=None):
+    def patch_common1(self, image_path, bg_color=None, fit_mode="fit"):
         """
         Patch COMMON1 (cartridge label) in common CGFX.
 
         Args:
             image_path: Path to 128x128 image
             bg_color: Optional background color as (R, G, B) tuple (0-255)
+            fit_mode: Resize mode - 'fit', 'fill', or 'stretch'
         """
         if Image is None:
             print("Warning: Pillow (PIL) not available; skipping COMMON1 patch")
             return
         img = Image.open(image_path)
-        encoded = encode_rgb565_tiled(img, 128, 128, bg_color)
+        encoded = encode_rgb565_tiled(img, 128, 128, bg_color, fit_mode)
 
         if len(encoded) != self.COMMON1_SIZE:
             raise ValueError(f"Encoded size {len(encoded)} != expected {self.COMMON1_SIZE}")
@@ -901,6 +918,8 @@ def main():
     parser.add_argument('screen', nargs='?', help='COMMON2 footer image (256×64)')
     parser.add_argument('-c', '--cartridge', help='COMMON1 cartridge label (128×128)')
     parser.add_argument('--bg-color', help='Background color for cartridge as R,G,B (e.g., 128,0,128)')
+    parser.add_argument('--fit-mode', choices=['fit', 'fill', 'stretch'], default='fit',
+                        help='Cartridge label resize mode: fit (default), fill, or stretch')
     parser.add_argument('--title', help='Generate footer from title text')
     parser.add_argument('--subtitle', default='', help='Subtitle for generated footer')
     parser.add_argument('-t', '--template', help='Path to template directory')
@@ -965,7 +984,7 @@ def main():
         
         # Patch COMMON1 (cartridge label)
         if args.cartridge:
-            patcher.patch_common1(args.cartridge, bg_color)
+            patcher.patch_common1(args.cartridge, bg_color, args.fit_mode)
         
         # Build banner
         patcher.build_banner(args.output)
