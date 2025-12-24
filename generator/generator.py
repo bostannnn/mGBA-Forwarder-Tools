@@ -81,43 +81,43 @@ class Generator():
 
     def get_title(self) -> dict:
         # get banner title
-        rom = open(self.infile, "rb")
-        rom.seek(0x68, 0)
-        banneraddrle = rom.read(4)
-        banneraddr = unpack("<I", banneraddrle)[0]
-        rom.seek(banneraddr, 0)
-        bannerversion = unpack("<H", rom.read(2))[0] & 3
-        langnum = 6
-        if bannerversion == 2:
-            langnum = 7
-        elif bannerversion == 3:
-            langnum = 8
+        with open(self.infile, "rb") as rom:
+            rom.seek(0x68, 0)
+            banneraddrle = rom.read(4)
+            banneraddr = unpack("<I", banneraddrle)[0]
+            rom.seek(banneraddr, 0)
+            bannerversion = unpack("<H", rom.read(2))[0] & 3
+            langnum = 6
+            if bannerversion == 2:
+                langnum = 7
+            elif bannerversion == 3:
+                langnum = 8
 
-        # crc checking, ignore banner version 1
-        if bannerversion >= 2:
-            rom.seek(banneraddr + 0x4)
-            crc093F = unpack("<H", rom.read(2))[0]
-            rom.seek(banneraddr + 0x20)
-            data = rom.read(0x940 - 0x20)
-            calcrc = crc16(data)
-            if crc093F != calcrc:
-                langnum = 6
-            else:
-                if bannerversion == 3:
-                    rom.seek(banneraddr + 0x6)
-                    crc0A3F = unpack("<H", rom.read(2))[0]
-                    rom.seek(banneraddr + 0x20)
-                    data = rom.read(0xA40 - 0x20)
-                    calcrc = crc16(data)
-                    if crc0A3F != calcrc:
-                        langnum = 7
-        title = []
-        titles = {}
-        for x in range(langnum):
-            offset = 0x240 + (0x100 * x)
-            rom.seek(banneraddr + offset, 0)
-            title.append(str(rom.read(0x100), "utf-16-le"))
-            title[x] = title[x].split('\0', 1)[0]
+            # crc checking, ignore banner version 1
+            if bannerversion >= 2:
+                rom.seek(banneraddr + 0x4)
+                crc093F = unpack("<H", rom.read(2))[0]
+                rom.seek(banneraddr + 0x20)
+                data = rom.read(0x940 - 0x20)
+                calcrc = crc16(data)
+                if crc093F != calcrc:
+                    langnum = 6
+                else:
+                    if bannerversion == 3:
+                        rom.seek(banneraddr + 0x6)
+                        crc0A3F = unpack("<H", rom.read(2))[0]
+                        rom.seek(banneraddr + 0x20)
+                        data = rom.read(0xA40 - 0x20)
+                        calcrc = crc16(data)
+                        if crc0A3F != calcrc:
+                            langnum = 7
+            title = []
+            titles = {}
+            for x in range(langnum):
+                offset = 0x240 + (0x100 * x)
+                rom.seek(banneraddr + offset, 0)
+                title.append(str(rom.read(0x100), "utf-16-le"))
+                title[x] = title[x].split('\0', 1)[0]
         titles['jpn'] = title[0].split('\n')
         titles['eng'] = title[1].split('\n')
         titles['fra'] = title[2].split('\n')
@@ -135,68 +135,42 @@ class Generator():
         return 0
 
     def makesmdh(self):
-        bannertoolarg = f'{self.cmdarg}bannertool makesmdh -i "data/icon.png" '
         title = self.title
+        args = [f'{self.cmdarg}bannertool', 'makesmdh', '-i', 'data/icon.png']
 
-        if len(title['eng']) == 3:
-            bannertoolarg += f'-s "{title["eng"][0]} {title["eng"][1]}" -l "{title["eng"][0]} {title["eng"][1]}" -p "{title["eng"][2]}" '
-        else:
-            bannertoolarg += f'-s "{title["eng"][0]}" -l "{title["eng"][0]}" -p "{title["eng"][1]}" '
-
-        if title['jpn'] is not None:
-            if len(title['jpn']) == 3:
-                bannertoolarg += f'-js "{title["jpn"][0]} {title["jpn"][1]}" -jl "{title["jpn"][0]} {title["jpn"][1]}" -jp "{title["jpn"][2]}" '
+        # Helper to add language-specific title args
+        def add_lang_args(lang_title, short_flag, long_flag, pub_flag):
+            if lang_title is None:
+                return
+            if len(lang_title) == 3:
+                args.extend([short_flag, f'{lang_title[0]} {lang_title[1]}'])
+                args.extend([long_flag, f'{lang_title[0]} {lang_title[1]}'])
+                args.extend([pub_flag, lang_title[2]])
             else:
-                bannertoolarg += f'-js "{title["jpn"][0]}" -jl "{title["jpn"][0]}" -jp "{title["jpn"][1]}" '
+                args.extend([short_flag, lang_title[0]])
+                args.extend([long_flag, lang_title[0]])
+                args.extend([pub_flag, lang_title[1]])
 
-        if title['fra'] is not None:
-            if len(title['fra']) == 3:
-                bannertoolarg += f'-fs "{title["fra"][0]} {title["fra"][1]}" -fl "{title["fra"][0]} {title["fra"][1]}" -fp "{title["fra"][2]}" '
-            else:
-                bannertoolarg += f'-fs "{title["fra"][0]}" -fl "{title["fra"][0]}" -fp "{title["fra"][1]}" '
+        add_lang_args(title['eng'], '-s', '-l', '-p')
+        add_lang_args(title.get('jpn'), '-js', '-jl', '-jp')
+        add_lang_args(title.get('fra'), '-fs', '-fl', '-fp')
+        add_lang_args(title.get('ger'), '-gs', '-gl', '-gp')
+        add_lang_args(title.get('ita'), '-is', '-il', '-ip')
+        add_lang_args(title.get('spa'), '-ss', '-sl', '-sp')
+        add_lang_args(title.get('chn'), '-scs', '-scl', '-scp')
+        add_lang_args(title.get('kor'), '-ks', '-kl', '-kp')
 
-        if title['ger'] is not None:
-            if len(title['ger']) == 3:
-                bannertoolarg += f'-gs "{title["ger"][0]} {title["ger"][1]}" -gl "{title["ger"][0]} {title["ger"][1]}" -gp "{title["ger"][2]}" '
-            else:
-                bannertoolarg += f'-gs "{title["ger"][0]}" -gl "{title["ger"][0]}" -gp "{title["ger"][1]}" '
-
-        if title['ita'] is not None:
-            if len(title['ita']) == 3:
-                bannertoolarg += f'-is "{title["ita"][0]} {title["ita"][1]}" -il "{title["ita"][0]} {title["ita"][1]}" -ip "{title["ita"][2]}" '
-            else:
-                bannertoolarg += f'-is "{title["ita"][0]}" -il "{title["ita"][0]}" -ip "{title["ita"][1]}" '
-
-        if title['spa'] is not None:
-            if len(title['spa']) == 3:
-                bannertoolarg += f'-ss "{title["spa"][0]} {title["spa"][1]}" -sl "{title["spa"][0]} {title["spa"][1]}" -sp "{title["spa"][2]}" '
-            else:
-                bannertoolarg += f'-ss "{title["spa"][0]}" -sl "{title["spa"][0]}" -sp "{title["spa"][1]}" '
-
-        if 'chn' in title and title['chn'] is not None:
-            if len(title['chn']) == 3:
-                bannertoolarg += f'-scs "{title["chn"][0]} {title["chn"][1]}" -scl "{title["chn"][0]} {title["chn"][1]}" -scp "{title["chn"][2]}" '
-            else:
-                bannertoolarg += f'-scs "{title["chn"][0]}" -scl "{title["chn"][0]}" -scp "{title["chn"][1]}" '
-
-        if 'kor' in title and title['kor'] is not None:
-            if len(title['kor']) == 3:
-                bannertoolarg += f'-ks "{title["kor"][0]} {title["kor"][1]}" -kl "{title["kor"][0]} {title["kor"][1]}" -kp "{title["kor"][2]}" '
-            else:
-                bannertoolarg += f'-ks "{title["kor"][0]}" -kl "{title["kor"][0]}" -kp "{title["kor"][1]}" '
-
-        bannertoolarg += '-o "data/output.smdh"'
-        bannertoolrun = subprocess.run(bannertoolarg, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        args.extend(['-o', 'data/output.smdh'])
+        bannertoolrun = subprocess.run(args, capture_output=True, text=True)
         if bannertoolrun.returncode != 0:
             self.message(f"{bannertoolrun.stdout}\n{bannertoolrun.stderr}")
             exit()
         return 0
 
     def getgamecode(self):
-        rom = open(self.infile, "rb")
-        rom.seek(0xC, 0)
-        code = str(rom.read(0x4), "ascii")
-        rom.close()
+        with open(self.infile, "rb") as rom:
+            rom.seek(0xC, 0)
+            code = str(rom.read(0x4), "ascii")
         self.gamecode = code
         return 0
 
@@ -222,9 +196,8 @@ class Generator():
             if r.status_code != 200:
                 r = requests.get(f"https://raw.githubusercontent.com/YANBForwarder/assets/main/assets/{self.gamecode[0:3]}/{self.gamecode[0:3]}.png", timeout=15)
             if r.status_code == 200:
-                f = open("data/banner.png", "wb")
-                f.write(r.content)
-                f.close()
+                with open("data/banner.png", "wb") as f:
+                    f.write(r.content)
                 self.boxart = os.path.abspath("data/banner.png")
                 self.boxartcustom = True
         if not self.sound:
@@ -232,9 +205,8 @@ class Generator():
             if r.status_code != 200:
                 r = requests.get(f"https://raw.githubusercontent.com/YANBForwarder/assets/main/assets/{self.gamecode[0:3]}/{self.gamecode[0:3]}.wav", timeout=15)
             if r.status_code == 200:
-                f = open("data/customsound.wav", 'wb')
-                f.write(r.content)
-                f.close()
+                with open("data/customsound.wav", 'wb') as f:
+                    f.write(r.content)
                 self.sound = os.path.abspath("data/customsound.wav")
         return 0
 
@@ -261,9 +233,8 @@ class Generator():
             r = requests.get(f"https://art.gametdb.com/ds/coverM/EN/{self.gamecode}.jpg")
             if r.status_code != 200:
                 return 1
-        f = open("data/boxart.jpg", "wb")
-        f.write(r.content)
-        f.close()
+        with open("data/boxart.jpg", "wb") as f:
+            f.write(r.content)
         self.boxart = os.path.abspath("data/boxart.jpg")
         return 0
 
@@ -300,9 +271,9 @@ class Generator():
         return 0
 
     def makebanner(self):
-        bannertoolarg = f'bannertool makebanner -i "{self.boxart}" -a "{self.sound}" -o "data/banner.bin"'
-        self.message(f"Using arguments: {bannertoolarg}")
-        bannertoolrun = subprocess.run(f'{self.cmdarg}{bannertoolarg}', shell=True, capture_output=True, universal_newlines=True)
+        args = [f'{self.cmdarg}bannertool', 'makebanner', '-i', self.boxart, '-a', self.sound, '-o', 'data/banner.bin']
+        self.message(f"Using arguments: {' '.join(args)}")
+        bannertoolrun = subprocess.run(args, capture_output=True, text=True)
         if bannertoolrun.returncode != 0:
             self.message(f"{bannertoolrun.stdout}\n{bannertoolrun.stderr}")
             exit()
@@ -428,33 +399,47 @@ class Generator():
             os.mkdir('romfs')
         except FileExistsError:
             pass
-        romfs = open('romfs/path.txt', 'w', encoding="utf8")
-        romfs.write(f"sd:{self.path}")
-        romfs.close()
+        with open('romfs/path.txt', 'w', encoding="utf8") as romfs:
+            romfs.write(f"sd:{self.path}")
         return 0
 
     def makeuniqueid(self):
         try:
-            f = open("id.txt", "r")
+            with open("id.txt", "r") as f:
+                # we are going to use the 0xFF400-0xFF7FF range
+                index = int(f.read())
+            self.uniqueid = 0xFF400 + index + 1
         except FileNotFoundError:
             self.uniqueid = 0xFF400
-            return 0
-        # we are going to use the 0xFF400-0xFF7FF range
-        index = int(f.read())
-        self.uniqueid = 0xFF400 + index + 1
         return 0
 
     def makecia(self):
-        makeromarg = f'{self.cmdarg}makerom -f cia -target t -exefslogo -rsf data/build-cia.rsf -elf data/forwarder.elf -banner data/banner.bin -icon data/output.smdh -DAPP_ROMFS=romfs -major 1 -minor 6 -micro 3 -DAPP_VERSION_MAJOR=1 -o "{self.output}" '
-        makeromarg += f'-DAPP_PRODUCT_CODE=CTR-H-{self.gamecode} -DAPP_TITLE="{self.title["eng"][0]}" -DAPP_UNIQUE_ID={self.uniqueid}'
-        self.message(f"Using arguments: {makeromarg}")
-        makeromrun = subprocess.run(makeromarg, shell=True, capture_output=True, universal_newlines=True)
+        args = [
+            f'{self.cmdarg}makerom',
+            '-f', 'cia',
+            '-target', 't',
+            '-exefslogo',
+            '-rsf', 'data/build-cia.rsf',
+            '-elf', 'data/forwarder.elf',
+            '-banner', 'data/banner.bin',
+            '-icon', 'data/output.smdh',
+            '-DAPP_ROMFS=romfs',
+            '-major', '1',
+            '-minor', '6',
+            '-micro', '3',
+            '-DAPP_VERSION_MAJOR=1',
+            '-o', self.output,
+            f'-DAPP_PRODUCT_CODE=CTR-H-{self.gamecode}',
+            f'-DAPP_TITLE={self.title["eng"][0]}',
+            f'-DAPP_UNIQUE_ID={self.uniqueid}',
+        ]
+        self.message(f"Using arguments: {' '.join(args)}")
+        makeromrun = subprocess.run(args, capture_output=True, text=True)
         if makeromrun.returncode != 0:
             self.message(f"{makeromrun.stdout}\n{makeromrun.stderr}")
             exit()
-        f = open("id.txt", "w")
-        f.write(str(self.uniqueid - 0xFF400))
-        f.close()
+        with open("id.txt", "w") as f:
+            f.write(str(self.uniqueid - 0xFF400))
         return 0
 
     def start(self):

@@ -18,8 +18,15 @@ import json
 import hashlib
 import io
 import urllib.parse
+import logging
 from pathlib import Path
 from threading import Thread, Event
+
+# Setup logging - errors go to stderr for debugging
+logging.basicConfig(
+    level=logging.WARNING,
+    format='%(levelname)s: %(message)s'
+)
 
 CLAMP_MAX_WIDTH = 820
 
@@ -123,6 +130,9 @@ class ForwarderWindow(Adw.ApplicationWindow):
         self.gba_batch_items: list[BatchItem] = []
         self.nds_batch_items: list[BatchItem] = []
         self.gba_show_only_problems: bool = False
+
+        # Debounce timers for preview updates (keyed by rom_path)
+        self._preview_debounce_timers: dict[str, int] = {}
         self.nds_show_only_problems: bool = False
         self._gba_expanded_keys: set[str] = set()
         self._nds_expanded_keys: set[str] = set()
@@ -1117,20 +1127,26 @@ class ForwarderWindow(Adw.ApplicationWindow):
                     it.confidence = 1.0
                 self._update_nds_batch_row_style(ex, it, rn)
                 self._update_nds_batch_summary()
-                sub = f"Released: {it.year.strip()}" if it.year and it.year.strip() else ""
-                footer_path = self._write_footer_preview_png(
-                    self.current_template_key, self.template_dir, it.title or rn, sub
-                )
-                self._set_picture_from_file(footer_pic, footer_path, 256, 64)
+                # Debounce the expensive preview update
+                def update_preview():
+                    sub = f"Released: {it.year.strip()}" if it.year and it.year.strip() else ""
+                    footer_path = self._write_footer_preview_png(
+                        self.current_template_key, self.template_dir, it.title or rn, sub
+                    )
+                    self._set_picture_from_file(footer_pic, footer_path, 256, 64)
+                self._debounced_preview_update(f"nds_title_{it.rom_path}", update_preview)
 
             def _on_year_changed(entry, it=item, rn=rom_name, footer_pic=footer_preview):
                 it.year = entry.get_text().strip()
                 it.subtitle = it.year
-                sub = f"Released: {it.year.strip()}" if it.year and it.year.strip() else ""
-                footer_path = self._write_footer_preview_png(
-                    self.current_template_key, self.template_dir, it.title or rn, sub
-                )
-                self._set_picture_from_file(footer_pic, footer_path, 256, 64)
+                # Debounce the expensive preview update
+                def update_preview():
+                    sub = f"Released: {it.year.strip()}" if it.year and it.year.strip() else ""
+                    footer_path = self._write_footer_preview_png(
+                        self.current_template_key, self.template_dir, it.title or rn, sub
+                    )
+                    self._set_picture_from_file(footer_pic, footer_path, 256, 64)
+                self._debounced_preview_update(f"nds_year_{it.rom_path}", update_preview)
 
             title_row.connect("changed", _on_title_changed)
             year_row.connect("changed", _on_year_changed)
@@ -1441,7 +1457,8 @@ class ForwarderWindow(Adw.ApplicationWindow):
 
             img.save(str(out_path))
             return str(out_path)
-        except Exception:
+        except Exception as e:
+            logging.warning(f"Failed to generate label preview for {image_path}: {e}")
             return None
 
     def _extract_nds_icon(self, rom_path: str) -> str | None:
@@ -1469,7 +1486,8 @@ class ForwarderWindow(Adw.ApplicationWindow):
             icon_img = icon_img.resize((48, 48), resample=0)  # Nearest neighbor for pixel art
             icon_img.save(str(out_path))
             return str(out_path)
-        except Exception:
+        except Exception as e:
+            logging.warning(f"Failed to extract NDS icon from {rom_path}: {e}")
             return None
 
     # =========================================================================
@@ -1715,7 +1733,8 @@ class ForwarderWindow(Adw.ApplicationWindow):
                 return
             cfg = json.loads(p.read_text(encoding="utf-8"))
             self.sgdb_api_key = str(cfg.get("steamgriddb_api_key") or "")
-        except Exception:
+        except Exception as e:
+            logging.warning(f"Failed to load config: {e}")
             self.sgdb_api_key = ""
 
     def _save_user_config(self) -> None:
@@ -1767,6 +1786,20 @@ class ForwarderWindow(Adw.ApplicationWindow):
         except Exception:
             picture.set_paintable(None)
             picture.queue_draw()
+
+    def _debounced_preview_update(self, key: str, callback, delay_ms: int = 300):
+        """Debounce preview updates to avoid regenerating on every keystroke."""
+        # Cancel any pending timer for this key
+        if key in self._preview_debounce_timers:
+            GLib.source_remove(self._preview_debounce_timers[key])
+
+        # Schedule new update
+        def do_update():
+            self._preview_debounce_timers.pop(key, None)
+            callback()
+            return False  # Don't repeat
+
+        self._preview_debounce_timers[key] = GLib.timeout_add(delay_ms, do_update)
 
     def _write_footer_preview_png(self, template_key: str, template_dir: Path, title: str, subtitle: str) -> str | None:
         """Create a footer preview PNG using a specific template; returns file path."""
@@ -2311,19 +2344,25 @@ class ForwarderWindow(Adw.ApplicationWindow):
                     it.confidence = 1.0
                 self._update_gba_batch_row_style(ex, it, rn)
                 self._update_gba_batch_summary()
-                sub = f"Released: {it.year.strip()}" if it.year.strip() else ""
-                footer_path = self._write_footer_preview_png(
-                    self.current_template_key, self.template_dir, it.title or rn, sub
-                )
-                self._set_picture_from_file(footer_pic, footer_path, 256, 64)
+                # Debounce the expensive preview update
+                def update_preview():
+                    sub = f"Released: {it.year.strip()}" if it.year.strip() else ""
+                    footer_path = self._write_footer_preview_png(
+                        self.current_template_key, self.template_dir, it.title or rn, sub
+                    )
+                    self._set_picture_from_file(footer_pic, footer_path, 256, 64)
+                self._debounced_preview_update(f"gba_title_{it.rom_path}", update_preview)
 
             def _on_year_changed(entry, it=item, rn=rom_name, footer_pic=footer_preview):
                 it.year = entry.get_text().strip()
-                sub = f"Released: {it.year.strip()}" if it.year.strip() else ""
-                footer_path = self._write_footer_preview_png(
-                    self.current_template_key, self.template_dir, it.title or rn, sub
-                )
-                self._set_picture_from_file(footer_pic, footer_path, 256, 64)
+                # Debounce the expensive preview update
+                def update_preview():
+                    sub = f"Released: {it.year.strip()}" if it.year.strip() else ""
+                    footer_path = self._write_footer_preview_png(
+                        self.current_template_key, self.template_dir, it.title or rn, sub
+                    )
+                    self._set_picture_from_file(footer_pic, footer_path, 256, 64)
+                self._debounced_preview_update(f"gba_year_{it.rom_path}", update_preview)
 
             title_row.connect("changed", _on_title_changed)
             year_row.connect("changed", _on_year_changed)
